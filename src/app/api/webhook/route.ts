@@ -14,7 +14,6 @@ import {
   removeProcessingLeadNumber,
 } from '@/lib/lead-numbers';
 import {
-  SYSTEM_PROMPT,
   parseLeadFromMessage,
   stripLeadPayload,
 } from '@/prompts/agent';
@@ -34,6 +33,7 @@ export const runtime = 'nodejs';
 
 const AI_RESPONSE_DELAY_MS = 2000;
 const DUPLICATE_MESSAGE_TTL_MS = 10 * 60 * 1000;
+const MAX_MODEL_CONTEXT_MESSAGES = 8;
 const processedMessageIds = new Map<string, number>();
 
 type LeadField =
@@ -70,6 +70,12 @@ const REQUIRED_TIME_SLOT_QUESTION =
   'Kakak lebih nyaman jam 10.00 atau 14.00?';
 const DEFAULT_URGENCY_MESSAGE =
   'Promo diskon 10% masih aktif dan kuota di kota Kakak terbatas.';
+
+const RUNTIME_SYSTEM_PROMPT = `Anda adalah Melisa, AI Business Consultant StartFranchise.id.
+Tujuan utama: kumpulkan 5 data lead (sumberInfo, biodata nama+domisili, bidangUsaha, budget, rencanaMulai), berikan insight singkat, dan arahkan meeting dengan Business Manager.
+Aturan balasan: bahasa Indonesia profesional, ramah, natural, maksimal 2-3 kalimat utama, gunakan sapaan Kakak/Kak, jangan pakai prefix Bot/User/Assistant, dan akhiri dengan kalimat tanya.
+Jika budget belum jelas, arahkan ke opsi: <50 juta, 50-100 juta, atau 100 juta ke atas.
+Jika semua data lengkap, tambahkan tag [LEAD_COMPLETE] di akhir balasan dengan JSON valid berisi: sumberInfo, biodata, bidangUsaha, budget, rencanaMulai.`;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -393,6 +399,29 @@ function shouldProcessMessage(messageId: string | null): boolean {
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function summarizeFieldValue(value?: string): string {
+  if (!value || value.trim().length === 0) {
+    return '-';
+  }
+
+  return normalizeWhitespace(value);
+}
+
+function buildRuntimeSystemMessage(collectedData: Record<string, string>): string {
+  const snapshot = [
+    `sumberInfo=${summarizeFieldValue(collectedData.sumberInfo)}`,
+    `biodata=${summarizeFieldValue(collectedData.biodata)}`,
+    `bidangUsaha=${summarizeFieldValue(collectedData.bidangUsaha)}`,
+    `budget=${summarizeFieldValue(collectedData.budget)}`,
+    `rencanaMulai=${summarizeFieldValue(collectedData.rencanaMulai)}`,
+  ].join('; ');
+
+  const missingFields = getMissingLeadFields(collectedData);
+  const missingSummary = missingFields.length > 0 ? missingFields.join(', ') : 'tidak ada';
+
+  return `${RUNTIME_SYSTEM_PROMPT}\nDATA SAAT INI: ${snapshot}\nFIELD BELUM LENGKAP: ${missingSummary}.`;
 }
 
 function normalizeBudgetText(value: string): string {
@@ -730,7 +759,6 @@ async function handleConversation(
     }
 
     state = createConversationState(chatId);
-    state.messages.push({ role: 'system', content: SYSTEM_PROMPT });
   }
 
   if (state.isComplete) {
@@ -811,9 +839,22 @@ async function handleConversation(
     stateWithUserMessage.collectedData
   );
 
+  const runtimeSystemMessage = buildRuntimeSystemMessage(
+    stateWithUserMessage.collectedData
+  );
+  const recentConversationMessages = stateWithUserMessage.messages.slice(
+    -MAX_MODEL_CONTEXT_MESSAGES
+  );
+
   const response = await openai.chat.completions.create({
     model: AI_MODEL,
-    messages: stateWithUserMessage.messages,
+    messages: [
+      {
+        role: 'system',
+        content: runtimeSystemMessage,
+      },
+      ...recentConversationMessages,
+    ],
     temperature: 0.7,
     max_tokens: 500,
   });
