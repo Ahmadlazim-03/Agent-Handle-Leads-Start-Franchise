@@ -38,6 +38,13 @@ interface WAHALabel {
   colorHex?: string;
 }
 
+export interface WhatsAppFilePayload {
+  url: string;
+  filename?: string;
+  mimetype?: string;
+  caption?: string;
+}
+
 type ChatHistoryResult =
   | { kind: 'ok'; messages: WAHAMessage[] }
   | { kind: 'not_found' }
@@ -91,6 +98,33 @@ function formatChatId(chatId: string): string {
   }
 
   return `${normalized}@c.us`;
+}
+
+function normalizePhoneNumber(value: string): string {
+  return value.replace(/\D/g, '');
+}
+
+function getRelatedChatIds(chatId: string): string[] {
+  const formatted = formatChatId(chatId);
+  const lower = formatted.toLowerCase();
+  const phoneNumber = normalizePhoneNumber(formatted);
+
+  const related = new Set<string>([formatted]);
+
+  if (!phoneNumber) {
+    return [...related];
+  }
+
+  if (lower.endsWith('@lid')) {
+    related.add(`${phoneNumber}@s.whatsapp.net`);
+    related.add(`${phoneNumber}@c.us`);
+  }
+
+  if (lower.endsWith('@s.whatsapp.net') || lower.endsWith('@c.us')) {
+    related.add(`${phoneNumber}@lid`);
+  }
+
+  return [...related];
 }
 
 function buildWahaUrl(path: string, params?: Record<string, string>): string {
@@ -301,6 +335,50 @@ export async function sendWhatsAppMessage(
     return true;
   } catch (error) {
     console.error('Error sending WhatsApp message:', error);
+    return false;
+  }
+}
+
+export async function sendWhatsAppFile(
+  chatId: string,
+  payload: WhatsAppFilePayload
+): Promise<boolean> {
+  const fileUrl = normalizeText(payload.url);
+  if (!fileUrl) {
+    return false;
+  }
+
+  const filename = normalizeText(payload.filename) || 'proposal.pdf';
+  const mimetype = normalizeText(payload.mimetype) || 'application/pdf';
+  const caption = normalizeText(payload.caption);
+
+  try {
+    const response = await fetch(buildWahaUrl('/api/sendFile'), {
+      method: 'POST',
+      headers: buildWahaHeaders(),
+      body: JSON.stringify({
+        chatId: formatChatId(chatId),
+        file: {
+          url: fileUrl,
+          filename,
+          mimetype,
+        },
+        caption: caption || undefined,
+        session: WAHA_SESSION,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      console.error(
+        `Failed to send WhatsApp file: status=${response.status} statusText=${response.statusText} body=${errorBody.slice(0, 500)}`
+      );
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Error sending WhatsApp file:', error);
     return false;
   }
 }
@@ -569,35 +647,42 @@ export async function applyLeadCompletionLabel(chatId: string): Promise<boolean>
     }
   }
 
-  const chatLabels = await getChatLabels(chatId);
+  const candidateChatIds = getRelatedChatIds(chatId);
+  let updatedAny = false;
 
-  let labelIds: string[] = [targetLabel.id];
-  if (chatLabels) {
-    const mergedIds = new Set(chatLabels.map((label) => label.id));
-    mergedIds.add(targetLabel.id);
+  for (const candidateChatId of candidateChatIds) {
+    const chatLabels = await getChatLabels(candidateChatId);
 
-    if (chatLabels.some((label) => label.id === targetLabel.id)) {
-      console.log(
-        `[WAHA Labels] Chat ${formatChatId(chatId)} already has label "${targetLabel.name}".`
+    let labelIds: string[] = [targetLabel.id];
+    if (chatLabels) {
+      const mergedIds = new Set(chatLabels.map((label) => label.id));
+      mergedIds.add(targetLabel.id);
+
+      if (chatLabels.some((label) => label.id === targetLabel.id)) {
+        console.log(
+          `[WAHA Labels] Chat ${formatChatId(candidateChatId)} already has label "${targetLabel.name}".`
+        );
+        updatedAny = true;
+        continue;
+      }
+
+      labelIds = [...mergedIds];
+    } else {
+      console.warn(
+        `[WAHA Labels] Could not read existing labels for ${formatChatId(candidateChatId)}. Applying only target label as fallback.`
       );
-      return true;
     }
 
-    labelIds = [...mergedIds];
-  } else {
-    console.warn(
-      `[WAHA Labels] Could not read existing labels for ${formatChatId(chatId)}. Applying only target label as fallback.`
-    );
+    const updated = await updateLabelsToChat(candidateChatId, labelIds);
+    if (updated) {
+      console.log(
+        `[WAHA Labels] Label "${targetLabel.name}" applied to ${formatChatId(candidateChatId)}.`
+      );
+      updatedAny = true;
+    }
   }
 
-  const updated = await updateLabelsToChat(chatId, labelIds);
-  if (updated) {
-    console.log(
-      `[WAHA Labels] Label "${targetLabel.name}" applied to ${formatChatId(chatId)}.`
-    );
-  }
-
-  return updated;
+  return updatedAny;
 }
 
 export async function isNewLead(chatId: string): Promise<boolean> {

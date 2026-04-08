@@ -12,7 +12,7 @@ export const AI_MODEL = 'gpt-4o-mini';
 
 export interface LeadData {
   sumberInfo: string;
-  namaKota: string;
+  biodata: string;
   bidangUsaha: string;
   budget: string;
   rencanaMulai: string;

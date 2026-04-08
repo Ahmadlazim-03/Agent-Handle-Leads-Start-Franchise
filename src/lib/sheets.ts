@@ -67,7 +67,7 @@ function pickValueForHeader(
     normalizedHeader === 'nama_kota' ||
     normalizedHeader === 'biodata'
   ) {
-    return lead.namaKota;
+    return lead.biodata;
   }
 
   if (
@@ -270,7 +270,7 @@ export async function appendLeadToSheet(
 
     await sheet.addRow(rowObject);
 
-    console.log(`Lead appended to Google Sheets: ${lead.namaKota}`);
+    console.log(`Lead appended to Google Sheets: ${lead.biodata}`);
     return true;
   } catch (error) {
     console.error('Error appending lead to Google Sheets:', error);

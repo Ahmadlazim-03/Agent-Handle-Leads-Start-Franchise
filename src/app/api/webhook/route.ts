@@ -25,6 +25,10 @@ import {
   updateConversationState,
   markConversationComplete,
 } from '@/lib/store';
+import {
+  listAvailableProposalBrands,
+  resolveBrandProposalRequest,
+} from '@/lib/proposals';
 
 export const runtime = 'nodejs';
 
@@ -34,7 +38,7 @@ const processedMessageIds = new Map<string, number>();
 
 type LeadField =
   | 'sumberInfo'
-  | 'namaKota'
+  | 'biodata'
   | 'bidangUsaha'
   | 'budget'
   | 'rencanaMulai';
@@ -43,7 +47,7 @@ type JsonRecord = Record<string, unknown>;
 
 const LEAD_FIELDS: LeadField[] = [
   'sumberInfo',
-  'namaKota',
+  'biodata',
   'bidangUsaha',
   'budget',
   'rencanaMulai',
@@ -59,6 +63,13 @@ const BUDGET_AMBIGUOUS_TERMS = [
   'tergantung',
   'nanti dulu',
 ];
+
+const REQUIRED_MEETING_INVITE =
+  'Kakak, boleh lanjut meeting singkat 5-10 menit dengan Business Manager StartFranchise.id?';
+const REQUIRED_TIME_SLOT_QUESTION =
+  'Kakak lebih nyaman jam 10.00 atau 14.00?';
+const DEFAULT_URGENCY_MESSAGE =
+  'Promo diskon 10% masih aktif dan kuota di kota Kakak terbatas.';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -415,10 +426,16 @@ function extractSourceInfo(text: string): string {
   return source.charAt(0).toUpperCase() + source.slice(1);
 }
 
-function extractNameCity(text: string): string {
-  const match = text.match(
-    /(?:nama\s+saya|saya|aku|perkenalkan\s+saya)\s+([A-Za-z][A-Za-z' .-]{1,40}?)\s+dari\s+([A-Za-z][A-Za-z' .-]{1,40})/i
-  );
+function extractBiodata(text: string): string {
+  const patterns = [
+    /(?:nama\s+saya|saya|aku|perkenalkan\s+saya)\s+([A-Za-z][A-Za-z' .-]{1,40}?)\s+dari\s+([A-Za-z][A-Za-z' .-]{1,40})/i,
+    /(?:nama\s+saya|saya|aku|perkenalkan\s+saya)\s+([A-Za-z][A-Za-z' .-]{1,40}?)[,\s]+(?:asal|domisili)\s+([A-Za-z][A-Za-z' .-]{1,40})/i,
+    /([A-Za-z][A-Za-z' .-]{1,40})\s+(?:dari|asal)\s+([A-Za-z][A-Za-z' .-]{1,40})/i,
+  ];
+
+  const match = patterns
+    .map((pattern) => text.match(pattern))
+    .find((result) => Boolean(result));
 
   if (!match) {
     return '';
@@ -497,7 +514,7 @@ function inferLeadDataFromUserMessage(
 
   return {
     sumberInfo: extractSourceInfo(normalizedMessage),
-    namaKota: extractNameCity(normalizedMessage),
+    biodata: extractBiodata(normalizedMessage),
     bidangUsaha: extractBusinessField(normalizedMessage),
     budget: extractBudget(normalizedMessage),
     rencanaMulai: extractStartPlan(normalizedMessage),
@@ -539,6 +556,99 @@ function asksForStartPlan(content: string): boolean {
   );
 }
 
+function stripRolePrefixes(content: string): string {
+  return content
+    .split('\n')
+    .map((line) => line.replace(/^\s*(Bot|User|Assistant)\s*:\s*/i, '').trimEnd())
+    .join('\n')
+    .trim();
+}
+
+function hasUrgencyMessage(content: string): boolean {
+  return /diskon\s*10%|grand\s*opening|kuota\s+franchise|stok\s+franchise|tinggal\s+sedikit/i.test(
+    content
+  );
+}
+
+function hasMeetingInvite(content: string): boolean {
+  return /meeting|business\s+manager|startfranchise\.id/i.test(
+    content
+  );
+}
+
+function hasTimeSlotQuestion(content: string): boolean {
+  return /jam\s*10|10\.?00|jam\s*2|14\.?00|available\s+jam\s+berapa|lebih\s+nyaman\s+jam/i.test(
+    content
+  );
+}
+
+function keepTwoShortSentences(content: string): string {
+  const normalized = normalizeWhitespace(content);
+  if (!normalized) {
+    return '';
+  }
+
+  const chunks =
+    normalized.match(/[^.!?]+[.!?]?/g)?.map((chunk) => chunk.trim()).filter(Boolean) ||
+    [normalized];
+
+  return chunks.slice(0, 2).join(' ');
+}
+
+function ensurePreferredAddress(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return 'Kakak';
+  }
+
+  if (/\bkakak\b/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  if (/\bkak\b/i.test(trimmed)) {
+    return trimmed.replace(/\bkak\b/i, 'Kakak');
+  }
+
+  return `Kakak, ${trimmed}`;
+}
+
+function ensureEndsWithQuestion(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return REQUIRED_TIME_SLOT_QUESTION;
+  }
+
+  if (trimmed.endsWith('?')) {
+    return trimmed;
+  }
+
+  return `${trimmed}?`;
+}
+
+function enforceFranchiseeReplyStyle(content: string): string {
+  let next = keepTwoShortSentences(stripRolePrefixes(content));
+
+  if (!next) {
+    next = 'Terima kasih sudah menghubungi StartFranchise.id.';
+  }
+
+  next = ensurePreferredAddress(next);
+
+  if (!hasUrgencyMessage(next)) {
+    next = `${next} ${DEFAULT_URGENCY_MESSAGE}`;
+  }
+
+  if (!hasMeetingInvite(next)) {
+    next = `${next} ${REQUIRED_MEETING_INVITE}`;
+  }
+
+  if (!hasTimeSlotQuestion(next)) {
+    next = `${next} ${REQUIRED_TIME_SLOT_QUESTION}`;
+  }
+
+  return ensureEndsWithQuestion(normalizeWhitespace(next));
+}
+
 function ensureTwoFieldFollowUp(content: string, missingFields: LeadField[]): string {
   const hasBudgetGap = missingFields.includes('budget');
   const hasStartPlanGap = missingFields.includes('rencanaMulai');
@@ -552,7 +662,7 @@ function ensureTwoFieldFollowUp(content: string, missingFields: LeadField[]): st
   }
 
   const followUp =
-    'Agar kami bisa bantu lebih tepat, boleh sekalian info kisaran budget (misal <50 juta, 50-100 juta, atau >100 juta) dan rencana mulai usaha Anda kapan?';
+    'Agar kami bantu cepat, info kisaran budget (<50 juta, 50-100 juta, atau >100 juta) dan rencana mulai usaha kapan, Kakak?';
   const separator = /[.!?]$/.test(content.trim()) ? '\n\n' : '.\n\n';
 
   console.log(
@@ -560,6 +670,45 @@ function ensureTwoFieldFollowUp(content: string, missingFields: LeadField[]): st
   );
 
   return `${content.trim()}${separator}${followUp}`;
+}
+
+async function buildProposalClarificationMessage(): Promise<string> {
+  const availableBrands = await listAvailableProposalBrands();
+
+  if (availableBrands.length === 0) {
+    return 'Kakak, katalog proposal brand belum terpasang. Boleh sebutkan brand yang Kakak cari supaya tim kami kirim manual?';
+  }
+
+  const visibleBrands = availableBrands.slice(0, 8);
+  const brandsText = visibleBrands.join(', ');
+  const hasMoreBrands = availableBrands.length > visibleBrands.length;
+
+  if (hasMoreBrands) {
+    return `Kakak sedang cari proposal brand apa? Saat ini yang tersedia: ${brandsText}, dan brand lainnya. Kakak pilih yang mana?`;
+  }
+
+  return `Kakak sedang cari proposal brand apa? Saat ini yang tersedia: ${brandsText}. Kakak pilih yang mana?`;
+}
+
+function buildProposalCaption(brandName: string, customCaption?: string): string {
+  const normalizedCustomCaption = customCaption?.trim();
+
+  if (normalizedCustomCaption) {
+    return ensureEndsWithQuestion(
+      ensurePreferredAddress(keepTwoShortSentences(stripRolePrefixes(normalizedCustomCaption)))
+    );
+  }
+
+  return `Kakak, berikut link proposal ${brandName}. Kakak mau lanjut bahas paket yang paling cocok?`;
+}
+
+function buildProposalLinkMessage(
+  brandName: string,
+  fileUrl: string,
+  customCaption?: string
+): string {
+  const caption = buildProposalCaption(brandName, customCaption);
+  return `${caption}\n\nLink proposal ${brandName}: ${fileUrl}`;
 }
 
 async function handleConversation(
@@ -608,6 +757,56 @@ async function handleConversation(
   );
   updateConversationState(chatId, stateWithUserMessage);
 
+  const proposalLookup = await resolveBrandProposalRequest(messageText);
+  if (proposalLookup.isProposalIntent) {
+    if (!proposalLookup.proposal) {
+      const clarificationMessage = await buildProposalClarificationMessage();
+
+      await delay(AI_RESPONSE_DELAY_MS);
+
+      const clarificationSent = await sendWhatsAppMessage(chatId, clarificationMessage);
+      if (!clarificationSent) {
+        console.error(`Failed to send proposal clarification to ${chatId}`);
+      }
+
+      const assistantState = addMessageToState(
+        chatId,
+        'assistant',
+        clarificationMessage
+      );
+      if (!assistantState) {
+        console.error(
+          `Missing conversation state for ${chatId} when saving proposal clarification`
+        );
+      }
+
+      return false;
+    }
+
+    const proposal = proposalLookup.proposal;
+    const proposalMessage = buildProposalLinkMessage(
+      proposal.brandName,
+      proposal.fileUrl,
+      proposal.caption
+    );
+
+    await delay(AI_RESPONSE_DELAY_MS);
+
+    const linkSent = await sendWhatsAppMessage(chatId, proposalMessage);
+    if (!linkSent) {
+      console.error(
+        `Failed to send proposal link message for ${chatId} brand=${proposal.brandName}`
+      );
+    }
+
+    const assistantState = addMessageToState(chatId, 'assistant', proposalMessage);
+    if (!assistantState) {
+      console.error(`Missing conversation state for ${chatId} when saving proposal reply`);
+    }
+
+    return false;
+  }
+
   const missingFieldsBeforeReply = getMissingLeadFields(
     stateWithUserMessage.collectedData
   );
@@ -642,9 +841,10 @@ async function handleConversation(
       : ensureTwoFieldFollowUp(aiReply, missingFieldsBeforeReply);
 
   const cleanReply = stripLeadPayload(aiReplyForDelivery);
-  const outgoingReply =
+  const outgoingReply = enforceFranchiseeReplyStyle(
     cleanReply ||
-    'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.';
+      'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.'
+  );
 
   await delay(AI_RESPONSE_DELAY_MS);
 
@@ -653,7 +853,7 @@ async function handleConversation(
     console.error(`Failed to deliver WhatsApp reply to ${chatId}`);
   }
 
-  const assistantState = addMessageToState(chatId, 'assistant', aiReplyForDelivery);
+  const assistantState = addMessageToState(chatId, 'assistant', outgoingReply);
   if (!assistantState) {
     console.error(`Missing conversation state for ${chatId} when adding assistant message`);
   }

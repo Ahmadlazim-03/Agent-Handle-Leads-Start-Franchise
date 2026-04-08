@@ -94,7 +94,7 @@ export async function sendTelegramNotification(
 }
 
 function formatLeadMessage(lead: LeadData, phoneNumber: string): string {
-  const safeNamaKota = escapeHtml(lead.namaKota);
+  const safeBiodata = escapeHtml(lead.biodata);
   const safeBidangUsaha = escapeHtml(lead.bidangUsaha);
   const safeSumberInfo = escapeHtml(lead.sumberInfo);
   const safeBudget = escapeHtml(lead.budget);
@@ -104,7 +104,7 @@ function formatLeadMessage(lead: LeadData, phoneNumber: string): string {
 
   return `<b>New Lead Alert!</b> 🔥
 
-<b>Nama/Kota:</b> ${safeNamaKota}
+<b>Biodata:</b> ${safeBiodata}
 <b>Usaha:</b> ${safeBidangUsaha}
 <b>Sumber:</b> ${safeSumberInfo}
 <b>Budget:</b> ${safeBudget}
