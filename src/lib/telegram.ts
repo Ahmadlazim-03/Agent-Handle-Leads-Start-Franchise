@@ -27,10 +27,7 @@ function normalizePhoneForLink(phoneNumber: string): string {
   return phoneNumber.replace(/\D/g, '');
 }
 
-export async function sendTelegramNotification(
-  lead: LeadData,
-  phoneNumber: string
-): Promise<boolean> {
+async function sendTelegramHtmlMessage(message: string): Promise<boolean> {
   const config = getTelegramConfig();
   if (!config) {
     return false;
@@ -39,7 +36,6 @@ export async function sendTelegramNotification(
   const telegramApiUrl = `https://api.telegram.org/bot${config.botToken}`;
 
   try {
-    const message = formatLeadMessage(lead, phoneNumber);
     const chatCandidates = [config.chatId];
     if (config.chatId.startsWith('-') && !config.chatId.startsWith('-100')) {
       chatCandidates.push(`-100${config.chatId.slice(1)}`);
@@ -91,6 +87,68 @@ export async function sendTelegramNotification(
     console.error('Error sending Telegram notification:', error);
     return false;
   }
+}
+
+function safeCollectedValue(collectedData: Record<string, string>, key: string): string {
+  const value = collectedData[key]?.trim();
+  if (!value) {
+    return '-';
+  }
+
+  return value;
+}
+
+function formatDealMeetingMessage(
+  phoneNumber: string,
+  meetingSchedule: string,
+  latestUserMessage: string,
+  collectedData: Record<string, string>
+): string {
+  const safeBiodata = escapeHtml(safeCollectedValue(collectedData, 'biodata'));
+  const safeBidangUsaha = escapeHtml(safeCollectedValue(collectedData, 'bidangUsaha'));
+  const safeSumberInfo = escapeHtml(safeCollectedValue(collectedData, 'sumberInfo'));
+  const safeBudget = escapeHtml(safeCollectedValue(collectedData, 'budget'));
+  const safeRencanaMulai = escapeHtml(safeCollectedValue(collectedData, 'rencanaMulai'));
+  const safeMeetingSchedule = escapeHtml(meetingSchedule || '-');
+  const safeLatestUserMessage = escapeHtml(latestUserMessage || '-');
+  const waNumber = normalizePhoneForLink(phoneNumber);
+  const waLink = waNumber ? `https://wa.me/${waNumber}` : '-';
+
+  return `<b>Lead Deal + Meeting Confirmed</b> ✅
+
+<b>Biodata:</b> ${safeBiodata}
+<b>Usaha:</b> ${safeBidangUsaha}
+<b>Sumber:</b> ${safeSumberInfo}
+<b>Budget:</b> ${safeBudget}
+<b>Rencana:</b> ${safeRencanaMulai}
+<b>Jadwal Meeting:</b> ${safeMeetingSchedule}
+
+<b>Pesan User:</b> ${safeLatestUserMessage}
+<b>WA Link:</b> ${waLink}`;
+}
+
+export async function sendTelegramNotification(
+  lead: LeadData,
+  phoneNumber: string
+): Promise<boolean> {
+  const message = formatLeadMessage(lead, phoneNumber);
+  return sendTelegramHtmlMessage(message);
+}
+
+export async function sendTelegramDealMeetingNotification(input: {
+  phoneNumber: string;
+  meetingSchedule: string;
+  latestUserMessage: string;
+  collectedData: Record<string, string>;
+}): Promise<boolean> {
+  const message = formatDealMeetingMessage(
+    input.phoneNumber,
+    input.meetingSchedule,
+    input.latestUserMessage,
+    input.collectedData
+  );
+
+  return sendTelegramHtmlMessage(message);
 }
 
 function formatLeadMessage(lead: LeadData, phoneNumber: string): string {

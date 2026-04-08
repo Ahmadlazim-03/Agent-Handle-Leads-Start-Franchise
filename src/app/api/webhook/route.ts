@@ -6,7 +6,10 @@ import {
   applyLeadCompletionLabel,
 } from '@/lib/waha';
 import { appendLeadToSheet } from '@/lib/sheets';
-import { sendTelegramNotification } from '@/lib/telegram';
+import {
+  sendTelegramNotification,
+  sendTelegramDealMeetingNotification,
+} from '@/lib/telegram';
 import {
   saveIncomingLeadNumber,
   saveKnownLeadNumber,
@@ -34,6 +37,7 @@ export const runtime = 'nodejs';
 const AI_RESPONSE_DELAY_MS = 2000;
 const DUPLICATE_MESSAGE_TTL_MS = 10 * 60 * 1000;
 const MAX_MODEL_CONTEXT_MESSAGES = 8;
+const MAX_PRIMARY_RESPONSE_SENTENCES = 3;
 const processedMessageIds = new Map<string, number>();
 
 type LeadField =
@@ -72,9 +76,11 @@ const DEFAULT_URGENCY_MESSAGE =
   'Promo diskon 10% masih aktif dan kuota di kota Kakak terbatas.';
 
 const RUNTIME_SYSTEM_PROMPT = `Anda adalah Melisa, AI Business Consultant StartFranchise.id.
-Tujuan utama: kumpulkan 5 data lead (sumberInfo, biodata nama+domisili, bidangUsaha, budget, rencanaMulai), berikan insight singkat, dan arahkan meeting dengan Business Manager.
+Tujuan utama: kumpulkan 5 data lead (sumberInfo, biodata nama+domisili, bidangUsaha, budget, rencanaMulai) sampai lengkap untuk disimpan ke spreadsheet.
 Aturan balasan: bahasa Indonesia profesional, ramah, natural, maksimal 2-3 kalimat utama, gunakan sapaan Kakak/Kak, jangan pakai prefix Bot/User/Assistant, dan akhiri dengan kalimat tanya.
+Balas seperti manusia dan customer service profesional: validasi konteks user secara empatik, jangan copy-paste template berulang, dan sesuaikan nada dengan kondisi user.
 Jika budget belum jelas, arahkan ke opsi: <50 juta, 50-100 juta, atau 100 juta ke atas.
+Meeting hanya ditawarkan jika user terlihat serius dan minimal 3 data sudah terkumpul. Jangan ulang meeting dan urgency di setiap balasan.
 Jika semua data lengkap, tambahkan tag [LEAD_COMPLETE] di akhir balasan dengan JSON valid berisi: sumberInfo, biodata, bidangUsaha, budget, rencanaMulai.`;
 
 function delay(ms: number): Promise<void> {
@@ -611,6 +617,116 @@ function hasTimeSlotQuestion(content: string): boolean {
   );
 }
 
+function hasEmpathyMessage(content: string): boolean {
+  return /paham|mengerti|wajar|tenang|senang\s+dengar|terima\s+kasih\s+sudah\s+sharing|apresiasi/i.test(
+    content
+  );
+}
+
+function buildEmpathyLine(userMessage: string): string {
+  const normalized = normalizeWhitespace(userMessage.toLowerCase());
+
+  if (/takut|khawatir|ragu|bingung|galau|mahal|risiko|resiko/i.test(normalized)) {
+    return 'Saya paham kekhawatiran Kakak, itu sangat wajar.';
+  }
+
+  if (/tertarik|semangat|penasaran|mantap|bagus|suka|cocok/i.test(normalized)) {
+    return 'Senang dengar antusias Kakak.';
+  }
+
+  if (/belum\s+tahu|masih\s+lihat|masih\s+bingung|masih\s+pertimbangkan/i.test(normalized)) {
+    return 'Tidak apa-apa Kakak, kita bahas pelan-pelan supaya jelas.';
+  }
+
+  return '';
+}
+
+function hasHighIntentSignal(content: string): boolean {
+  return /serius|lanjut|deal|investasi|modal|proposal|ketemu|meeting|jadwal|buka\s+franchise|franchise\s+apa/i.test(
+    content
+  );
+}
+
+function countCollectedLeadFields(collectedData: Record<string, string>): number {
+  const missingCount = getMissingLeadFields(collectedData).length;
+  return LEAD_FIELDS.length - missingCount;
+}
+
+function hasAssistantMentionedMeeting(messages: Array<{ role: string; content: string }>): boolean {
+  return messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      (hasMeetingInvite(message.content) || hasTimeSlotQuestion(message.content))
+  );
+}
+
+function hasAssistantMentionedUrgency(messages: Array<{ role: string; content: string }>): boolean {
+  return messages.some(
+    (message) => message.role === 'assistant' && hasUrgencyMessage(message.content)
+  );
+}
+
+function hasDealSignal(content: string): boolean {
+  return /\b(deal|setuju|sepakat|fix|oke\s*deal|ok\s*deal|siap\s*deal|jadi\s*deal|ambil\s*paket)\b/i.test(
+    content
+  );
+}
+
+function extractMeetingSchedule(content: string): string {
+  const normalized = normalizeWhitespace(content.toLowerCase());
+  const hasMeetingContext = /\b(meeting|ketemu|jadwal|call|zoom|gmeet|jam|pukul)\b/i.test(
+    normalized
+  );
+
+  if (!hasMeetingContext) {
+    return '';
+  }
+
+  const dateHintMatch = normalized.match(
+    /\b(hari\s*ini|besok|lusa|senin|selasa|rabu|kamis|jumat|sabtu|minggu)\b/i
+  );
+  const dateHint = dateHintMatch ? dateHintMatch[1] : '';
+
+  if (/\b(10\.?00|jam\s*10|10\s*pagi|pukul\s*10)\b/i.test(normalized)) {
+    return `${dateHint ? `${dateHint} ` : ''}jam 10.00`.trim();
+  }
+
+  if (/\b(14\.?00|jam\s*14|jam\s*2|2\s*siang|pukul\s*14)\b/i.test(normalized)) {
+    return `${dateHint ? `${dateHint} ` : ''}jam 14.00`.trim();
+  }
+
+  return dateHint || '';
+}
+
+function buildDealMeetingConfirmationMessage(meetingSchedule: string): string {
+  const normalizedSchedule = meetingSchedule.trim();
+  if (!normalizedSchedule) {
+    return 'Siap Kakak, meeting dengan Business Manager kami sudah kami catat. Tim kami akan segera konfirmasi jadwalnya.';
+  }
+
+  return `Siap Kakak, meeting dengan Business Manager kami sudah kami catat untuk ${normalizedSchedule}. Tim kami akan segera konfirmasi.`;
+}
+
+function toLeadDataFromCollectedData(collectedData: Record<string, string>): {
+  sumberInfo: string;
+  biodata: string;
+  bidangUsaha: string;
+  budget: string;
+  rencanaMulai: string;
+} | null {
+  if (getMissingLeadFields(collectedData).length > 0) {
+    return null;
+  }
+
+  return {
+    sumberInfo: normalizeWhitespace(collectedData.sumberInfo),
+    biodata: normalizeWhitespace(collectedData.biodata),
+    bidangUsaha: normalizeWhitespace(collectedData.bidangUsaha),
+    budget: normalizeWhitespace(collectedData.budget),
+    rencanaMulai: normalizeWhitespace(collectedData.rencanaMulai),
+  };
+}
+
 function keepTwoShortSentences(content: string): string {
   const normalized = normalizeWhitespace(content);
   if (!normalized) {
@@ -621,7 +737,7 @@ function keepTwoShortSentences(content: string): string {
     normalized.match(/[^.!?]+[.!?]?/g)?.map((chunk) => chunk.trim()).filter(Boolean) ||
     [normalized];
 
-  return chunks.slice(0, 2).join(' ');
+  return chunks.slice(0, MAX_PRIMARY_RESPONSE_SENTENCES).join(' ');
 }
 
 function ensurePreferredAddress(content: string): string {
@@ -654,7 +770,14 @@ function ensureEndsWithQuestion(content: string): string {
   return `${trimmed}?`;
 }
 
-function enforceFranchiseeReplyStyle(content: string): string {
+function enforceFranchiseeReplyStyle(
+  content: string,
+  options: {
+    includeUrgency: boolean;
+    includeMeetingOffer: boolean;
+    empathyLine?: string;
+  }
+): string {
   let next = keepTwoShortSentences(stripRolePrefixes(content));
 
   if (!next) {
@@ -663,15 +786,19 @@ function enforceFranchiseeReplyStyle(content: string): string {
 
   next = ensurePreferredAddress(next);
 
-  if (!hasUrgencyMessage(next)) {
+  if (options.empathyLine && !hasEmpathyMessage(next)) {
+    next = `${options.empathyLine} ${next}`;
+  }
+
+  if (options.includeUrgency && !hasUrgencyMessage(next)) {
     next = `${next} ${DEFAULT_URGENCY_MESSAGE}`;
   }
 
-  if (!hasMeetingInvite(next)) {
+  if (options.includeMeetingOffer && !hasMeetingInvite(next)) {
     next = `${next} ${REQUIRED_MEETING_INVITE}`;
   }
 
-  if (!hasTimeSlotQuestion(next)) {
+  if (options.includeMeetingOffer && !hasTimeSlotQuestion(next)) {
     next = `${next} ${REQUIRED_TIME_SLOT_QUESTION}`;
   }
 
@@ -785,6 +912,65 @@ async function handleConversation(
   );
   updateConversationState(chatId, stateWithUserMessage);
 
+  const meetingSchedule = extractMeetingSchedule(messageText);
+  const isDealAndMeetingFinalized =
+    hasDealSignal(messageText) && meetingSchedule.length > 0;
+
+  if (isDealAndMeetingFinalized) {
+    const confirmationMessage = buildDealMeetingConfirmationMessage(meetingSchedule);
+
+    await delay(AI_RESPONSE_DELAY_MS);
+
+    const confirmationSent = await sendWhatsAppMessage(chatId, confirmationMessage);
+    if (!confirmationSent) {
+      console.error(`Failed to send deal+meeting confirmation to ${chatId}`);
+    }
+
+    const assistantState = addMessageToState(chatId, 'assistant', confirmationMessage);
+    if (!assistantState) {
+      console.error(
+        `Missing conversation state for ${chatId} when saving deal+meeting confirmation`
+      );
+    }
+
+    const leadFromState = toLeadDataFromCollectedData(
+      stateWithUserMessage.collectedData
+    );
+
+    const telegramDealSent = await sendTelegramDealMeetingNotification({
+      phoneNumber: chatId,
+      meetingSchedule,
+      latestUserMessage: messageText,
+      collectedData: stateWithUserMessage.collectedData,
+    });
+
+    let sheetSaved = true;
+    let labelTagged = true;
+
+    if (leadFromState) {
+      sheetSaved = await appendLeadToSheet(leadFromState, chatId);
+      labelTagged = await applyLeadCompletionLabel(chatId);
+    }
+
+    const removedFromProcessing = await removeProcessingLeadNumber(chatId);
+    const knownSavedToRedis = await saveKnownLeadNumber(chatId);
+
+    if (
+      !telegramDealSent ||
+      !sheetSaved ||
+      !labelTagged ||
+      !removedFromProcessing ||
+      !knownSavedToRedis
+    ) {
+      console.error(
+        `Deal+meeting flow completed with errors for ${chatId}: telegramDealSent=${telegramDealSent}, sheetSaved=${sheetSaved}, labelTagged=${labelTagged}, removedFromProcessing=${removedFromProcessing}, knownSavedToRedis=${knownSavedToRedis}`
+      );
+    }
+
+    markConversationComplete(chatId);
+    return true;
+  }
+
   const proposalLookup = await resolveBrandProposalRequest(messageText);
   if (proposalLookup.isProposalIntent) {
     if (!proposalLookup.proposal) {
@@ -882,9 +1068,27 @@ async function handleConversation(
       : ensureTwoFieldFollowUp(aiReply, missingFieldsBeforeReply);
 
   const cleanReply = stripLeadPayload(aiReplyForDelivery);
+  const collectedFieldCount = countCollectedLeadFields(
+    stateWithUserMessage.collectedData
+  );
+  const shouldOfferMeeting =
+    !leadData &&
+    collectedFieldCount >= 3 &&
+    hasHighIntentSignal(messageText) &&
+    !hasAssistantMentionedMeeting(stateWithUserMessage.messages);
+  const shouldIncludeUrgency =
+    shouldOfferMeeting &&
+    !hasAssistantMentionedUrgency(stateWithUserMessage.messages);
+  const empathyLine = buildEmpathyLine(messageText);
+
   const outgoingReply = enforceFranchiseeReplyStyle(
     cleanReply ||
-      'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.'
+      'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.',
+    {
+      includeUrgency: shouldIncludeUrgency,
+      includeMeetingOffer: shouldOfferMeeting,
+      empathyLine,
+    }
   );
 
   await delay(AI_RESPONSE_DELAY_MS);

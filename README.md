@@ -55,7 +55,7 @@ cp .env.example .env.local
 | `BRAND_PROPOSAL_FILES_JSON` | JSON mapping brand ke file proposal PDF Google Drive |
 | `BRAND_PROPOSAL_DRIVE_FOLDER_URL` | URL/ID folder Google Drive untuk auto-scan semua file PDF proposal |
 | `NEW_LEAD_MAX_USER_MESSAGES` | Batas jumlah pesan user untuk tetap dianggap lead baru (default: 1) |
-| `ALLOW_EXISTING_LEADS_FOR_TEST` | `true` untuk mode testing agar nomor lama tetap diproses |
+| `ALLOW_EXISTING_LEADS_FOR_TEST` | Gunakan `false` untuk production; `true` hanya untuk testing |
 | `REDIS_URL` | URL koneksi Redis untuk menyimpan/fetch nomor lead |
 | `GOOGLE_API_KEY` | API key Google (dipakai juga untuk membaca daftar file PDF dari folder Drive publik) |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | Email service account Google |

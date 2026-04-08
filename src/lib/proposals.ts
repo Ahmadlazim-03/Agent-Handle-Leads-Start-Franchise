@@ -53,6 +53,33 @@ const PROPOSAL_INTENT_TERMS = [
   'pdf',
 ];
 
+const BRAND_MATCH_NOISE_TOKENS = new Set([
+  'proposal',
+  'brand',
+  'franchise',
+  'katalog',
+  'list',
+  'daftar',
+  'apa',
+  'saja',
+  'dong',
+  'aja',
+  'ya',
+  'yah',
+  'yg',
+  'yang',
+  'tolong',
+  'minta',
+  'mau',
+  'saya',
+  'aku',
+  'kak',
+  'kakak',
+]);
+
+const SINGLE_ALIAS_MIN_SCORE = 0.86;
+const MULTI_ALIAS_MIN_SCORE = 0.72;
+
 const BRAND_PROPOSAL_FILES_JSON =
   process.env.BRAND_PROPOSAL_FILES_JSON?.trim() || '';
 const BRAND_PROPOSAL_DRIVE_FOLDER_INPUT =
@@ -102,6 +129,144 @@ function matchesTerm(normalizedMessage: string, term: string): boolean {
     .join('\\s+');
 
   return new RegExp(`(?:^|\\s)${pattern}(?:\\s|$)`, 'i').test(normalizedMessage);
+}
+
+function tokenizeNormalizedText(value: string): string[] {
+  return normalizeSearchText(value).split(' ').filter(Boolean);
+}
+
+function removeNoiseTokens(tokens: string[]): string[] {
+  return tokens.filter((token) => !BRAND_MATCH_NOISE_TOKENS.has(token));
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  if (left === right) {
+    return 0;
+  }
+
+  if (left.length === 0) {
+    return right.length;
+  }
+
+  if (right.length === 0) {
+    return left.length;
+  }
+
+  const matrix: number[][] = Array.from({ length: left.length + 1 }, () =>
+    new Array<number>(right.length + 1).fill(0)
+  );
+
+  for (let i = 0; i <= left.length; i += 1) {
+    matrix[i][0] = i;
+  }
+
+  for (let j = 0; j <= right.length; j += 1) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= left.length; i += 1) {
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return matrix[left.length][right.length];
+}
+
+function similarityScore(left: string, right: string): number {
+  const normalizedLeft = normalizeSearchText(left);
+  const normalizedRight = normalizeSearchText(right);
+
+  if (!normalizedLeft || !normalizedRight) {
+    return 0;
+  }
+
+  if (normalizedLeft === normalizedRight) {
+    return 1;
+  }
+
+  const distance = levenshteinDistance(normalizedLeft, normalizedRight);
+  const maxLength = Math.max(normalizedLeft.length, normalizedRight.length);
+  if (maxLength === 0) {
+    return 0;
+  }
+
+  return Math.max(0, 1 - distance / maxLength);
+}
+
+function bestPhraseWindowScore(messageTokens: string[], aliasTokens: string[]): number {
+  if (messageTokens.length === 0 || aliasTokens.length === 0) {
+    return 0;
+  }
+
+  const aliasPhrase = aliasTokens.join(' ');
+  const minWindowSize = Math.max(1, aliasTokens.length - 1);
+  const maxWindowSize = Math.min(messageTokens.length, aliasTokens.length + 1);
+
+  let best = 0;
+
+  for (let windowSize = minWindowSize; windowSize <= maxWindowSize; windowSize += 1) {
+    for (let startIndex = 0; startIndex + windowSize <= messageTokens.length; startIndex += 1) {
+      const windowPhrase = messageTokens
+        .slice(startIndex, startIndex + windowSize)
+        .join(' ');
+
+      const score = similarityScore(windowPhrase, aliasPhrase);
+      if (score > best) {
+        best = score;
+      }
+    }
+  }
+
+  return best;
+}
+
+function bestTokenScore(messageTokens: string[], aliasTokens: string[]): number {
+  if (messageTokens.length === 0 || aliasTokens.length === 0) {
+    return 0;
+  }
+
+  const aliasToken = aliasTokens.join(' ');
+
+  let best = 0;
+  for (const messageToken of messageTokens) {
+    const score = similarityScore(messageToken, aliasToken);
+    if (score > best) {
+      best = score;
+    }
+  }
+
+  return best;
+}
+
+function computeAliasMatchScore(normalizedMessage: string, alias: string): number {
+  const normalizedAlias = normalizeSearchText(alias);
+  if (!normalizedAlias) {
+    return 0;
+  }
+
+  if (matchesTerm(normalizedMessage, normalizedAlias)) {
+    return 1;
+  }
+
+  const messageTokens = removeNoiseTokens(tokenizeNormalizedText(normalizedMessage));
+  const aliasTokens = tokenizeNormalizedText(normalizedAlias);
+  if (messageTokens.length === 0 || aliasTokens.length === 0) {
+    return 0;
+  }
+
+  if (aliasTokens.length === 1) {
+    return bestTokenScore(messageTokens, aliasTokens);
+  }
+
+  const phraseScore = bestPhraseWindowScore(messageTokens, aliasTokens);
+  return phraseScore;
 }
 
 function extractGoogleDriveFileId(input: string): string | null {
@@ -166,6 +331,7 @@ function toBrandNameFromFilename(input: string): string {
 
   normalized = normalized
     .replace(/^copy\s+of\s+/i, '')
+    .replace(/^proposa[l]?\s+/i, '')
     .replace(/^proposal\s+/i, '')
     .replace(/^peluang\s+bisnis\s+/i, '')
     .replace(/\(\d+\)\s*$/g, '')
@@ -522,6 +688,54 @@ function hasProposalIntent(messageText: string): boolean {
   return PROPOSAL_INTENT_TERMS.some((term) => matchesTerm(normalizedMessage, term));
 }
 
+function findBestCatalogMatch(
+  catalog: ParsedProposalEntry[],
+  normalizedMessage: string
+): ParsedProposalEntry | null {
+  let bestMatch:
+    | {
+        entry: ParsedProposalEntry;
+        alias: string;
+        score: number;
+      }
+    | null = null;
+
+  for (const entry of catalog) {
+    for (const alias of entry.aliases) {
+      const score = computeAliasMatchScore(normalizedMessage, alias);
+      if (score <= 0) {
+        continue;
+      }
+
+      if (
+        !bestMatch ||
+        score > bestMatch.score ||
+        (score === bestMatch.score && alias.length > bestMatch.alias.length)
+      ) {
+        bestMatch = {
+          entry,
+          alias,
+          score,
+        };
+      }
+    }
+  }
+
+  if (!bestMatch) {
+    return null;
+  }
+
+  const aliasTokenCount = tokenizeNormalizedText(bestMatch.alias).length;
+  const minScore =
+    aliasTokenCount <= 1 ? SINGLE_ALIAS_MIN_SCORE : MULTI_ALIAS_MIN_SCORE;
+
+  if (bestMatch.score < minScore) {
+    return null;
+  }
+
+  return bestMatch.entry;
+}
+
 export async function listAvailableProposalBrands(): Promise<string[]> {
   const catalog = await getProposalCatalog();
   return catalog.map((entry) => entry.brandName);
@@ -538,16 +752,8 @@ export async function resolveBrandProposalRequest(
   }
 
   const normalizedMessage = normalizeSearchText(messageText);
-  const catalog = [...(await getProposalCatalog())].sort(
-    (a, b) =>
-      Math.max(...b.aliases.map((alias) => alias.length)) -
-      Math.max(...a.aliases.map((alias) => alias.length))
-  );
-
-  const matched =
-    catalog.find((entry) =>
-      entry.aliases.some((alias) => matchesTerm(normalizedMessage, alias))
-    ) || null;
+  const catalog = await getProposalCatalog();
+  const matched = findBestCatalogMatch(catalog, normalizedMessage);
 
   if (!matched) {
     return {
