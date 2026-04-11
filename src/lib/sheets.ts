@@ -137,6 +137,15 @@ function stripWrappingQuotes(value: string): string {
   return value;
 }
 
+function normalizeGooglePrivateKey(value: string): string {
+  return stripWrappingQuotes(value.trim())
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .trim();
+}
+
 function getJakartaTimestamp(): string {
   return new Date().toLocaleString('id-ID', {
     timeZone: 'Asia/Jakarta',
@@ -185,11 +194,9 @@ async function getSheetsRuntimeConfig(): Promise<SheetsRuntimeConfig> {
   const googleServiceAccountEmail = stripWrappingQuotes(
     runtimeValues.GOOGLE_SERVICE_ACCOUNT_EMAIL.trim()
   );
-  const googlePrivateKey = stripWrappingQuotes(
-    runtimeValues.GOOGLE_PRIVATE_KEY.trim()
-  )
-    .replace(/\\n/g, '\n')
-    .trim();
+  const googlePrivateKey = normalizeGooglePrivateKey(
+    runtimeValues.GOOGLE_PRIVATE_KEY
+  );
 
   return {
     sheetId,

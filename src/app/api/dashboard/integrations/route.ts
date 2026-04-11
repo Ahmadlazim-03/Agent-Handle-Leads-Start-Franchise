@@ -73,6 +73,15 @@ function stripWrappingQuotes(value: string): string {
   return value;
 }
 
+function normalizeGooglePrivateKey(value: string): string {
+  return stripWrappingQuotes(value.trim())
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .trim();
+}
+
 function buildWahaHeaders(apiKey: string): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -414,8 +423,7 @@ async function checkSpreadsheetStatus(): Promise<IntegrationStatus> {
     runtimeValues.GOOGLE_SHEET_NAME.trim() || DEFAULT_GOOGLE_SHEET_NAME;
 
   const email = stripWrappingQuotes(runtimeValues.GOOGLE_SERVICE_ACCOUNT_EMAIL.trim());
-  const rawPrivateKey = stripWrappingQuotes(runtimeValues.GOOGLE_PRIVATE_KEY.trim());
-  const privateKey = rawPrivateKey.replace(/\\n/g, '\n').trim();
+  const privateKey = normalizeGooglePrivateKey(runtimeValues.GOOGLE_PRIVATE_KEY);
 
   if (!spreadsheetId) {
     return {
