@@ -164,6 +164,32 @@ async function loadWahaRuntimeConfig(force = false): Promise<WahaRuntimeConfig> 
   return resolvedConfig;
 }
 
+export async function downloadWahaMediaAsBase64(messageId: string): Promise<string | null> {
+  try {
+    const config = await loadWahaRuntimeConfig();
+    const url = `${config.wahaUrl}/api/${config.wahaSession}/messages/${encodeURIComponent(messageId)}/download`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: config.wahaApiKey ? { 'X-Api-Key': config.wahaApiKey } : {},
+    });
+
+    if (!response.ok) {
+      console.error(`Failed to download WAHA media for ${messageId}: ${response.status}`);
+      return null;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const mimeType = response.headers.get('content-type') || 'image/jpeg';
+    
+    return `data:${mimeType};base64,${buffer.toString('base64')}`;
+  } catch (error) {
+    console.error(`Error downloading WAHA media for ${messageId}:`, error);
+    return null;
+  }
+}
+
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;

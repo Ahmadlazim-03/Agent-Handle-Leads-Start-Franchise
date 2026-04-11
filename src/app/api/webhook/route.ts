@@ -5,6 +5,7 @@ import {
   isKnownLeadByAliases,
   isNewLead,
   applyLeadCompletionLabel,
+  downloadWahaMediaAsBase64,
 } from '@/lib/waha';
 import { appendLeadToSheet } from '@/lib/sheets';
 import {
@@ -328,7 +329,22 @@ export async function POST(request: NextRequest) {
     }
 
     const messageText = extractMessageText(payload);
-    const imageUrl = extractImageUrl(payload);
+    let imageUrl = extractImageUrl(payload);
+
+    if (imageUrl && imageUrl.startsWith('waha-download:')) {
+      const wahaMediaId = imageUrl.split('waha-download:')[1];
+      try {
+        const base64Data = await downloadWahaMediaAsBase64(wahaMediaId);
+        if (base64Data) {
+          imageUrl = base64Data;
+        } else {
+          imageUrl = null;
+        }
+      } catch (err) {
+        console.error("Failed to download WAHA media", err);
+        imageUrl = null;
+      }
+    }
 
     if (chatId && isGroupOrBroadcastIdentifier(chatId)) {
       console.log(`Ignoring group/broadcast chatId=${chatId}`);
@@ -492,6 +508,20 @@ function extractMessageText(payload: JsonRecord): string | null {
 
 function extractImageUrl(payload: JsonRecord): string | null {
   const nestedMessage = asRecord(payload.message);
+
+  // Check if WAHA explicitly indicates there is media, or if the type is image/video
+  const hasMedia = extractBoolean(payload.hasMedia);
+  const type = extractTextValue(payload.type);
+  const hasImageMessage = Boolean(nestedMessage?.imageMessage);
+
+  if (hasMedia || type === 'image' || type === 'video' || hasImageMessage) {
+    // We can fetch the media binary directly using WAHA's /download API
+    const messageId = extractMessageId(payload);
+    if (messageId) {
+      return `waha-download:${messageId}`;
+    }
+  }
+
   if (!nestedMessage) {
     // Check top-level for WAHA-style media
     const directMedia = extractTextValue(payload.mediaUrl as string) ?? extractTextValue(payload.media_url as string);
@@ -514,6 +544,7 @@ function extractImageUrl(payload: JsonRecord): string | null {
     null
   );
 }
+
 function extractBoolean(value: unknown): boolean {
   if (typeof value === 'boolean') {
     return value;
