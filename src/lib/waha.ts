@@ -164,6 +164,38 @@ async function loadWahaRuntimeConfig(force = false): Promise<WahaRuntimeConfig> 
   return resolvedConfig;
 }
 
+export async function fetchWahaMediaAsBase64FromUrl(originalMediaUrl: string): Promise<string | null> {
+  try {
+    const config = await loadWahaRuntimeConfig();
+    
+    // Replace localhost or 127.0.0.1 with the configured WAHA_URL so it works in Docker/Coolify
+    let fetchUrl = originalMediaUrl;
+    if (fetchUrl.includes('localhost:') || fetchUrl.includes('127.0.0.1:')) {
+      const urlObj = new URL(fetchUrl);
+      fetchUrl = `${config.wahaUrl}${urlObj.pathname}${urlObj.search}`;
+    }
+
+    const response = await fetch(fetchUrl, {
+      method: 'GET',
+      headers: config.wahaApiKey ? { 'X-Api-Key': config.wahaApiKey } : {},
+    });
+
+    if (!response.ok) {
+      console.error(`Failed to fetch WAHA cached media from ${fetchUrl}: ${response.status}`);
+      return null;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const mimeType = response.headers.get('content-type') || 'image/jpeg';
+    
+    return `data:${mimeType};base64,${buffer.toString('base64')}`;
+  } catch (error) {
+    console.error(`Error fetching WAHA cached media from ${originalMediaUrl}:`, error);
+    return null;
+  }
+}
+
 export async function downloadWahaMediaAsBase64(messageId: string): Promise<string | null> {
   try {
     const config = await loadWahaRuntimeConfig();

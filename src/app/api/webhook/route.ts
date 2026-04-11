@@ -6,6 +6,7 @@ import {
   isNewLead,
   applyLeadCompletionLabel,
   downloadWahaMediaAsBase64,
+  fetchWahaMediaAsBase64FromUrl,
 } from '@/lib/waha';
 import { appendLeadToSheet } from '@/lib/sheets';
 import {
@@ -340,8 +341,33 @@ export async function POST(request: NextRequest) {
         } else {
           imageUrl = null;
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Failed to download WAHA media", err);
+        void appendDashboardLog({
+          level: 'error',
+          source: 'webhook',
+          message: 'Gagal download media via WAHA API',
+          details: { error: err?.message || String(err), wahaMediaId }
+        });
+        imageUrl = null;
+      }
+    } else if (imageUrl && imageUrl.startsWith('waha-file-url:')) {
+      const fetchUrl = imageUrl.split('waha-file-url:')[1];
+      try {
+        const base64Data = await fetchWahaMediaAsBase64FromUrl(fetchUrl);
+        if (base64Data) {
+          imageUrl = base64Data;
+        } else {
+          imageUrl = null;
+        }
+      } catch (err: any) {
+        console.error("Failed to fetch WAHA cached media url", err);
+        void appendDashboardLog({
+          level: 'error',
+          source: 'webhook',
+          message: 'Gagal fetch media dari WAHA URL',
+          details: { error: err?.message || String(err), fetchUrl }
+        });
         imageUrl = null;
       }
     }
@@ -514,8 +540,13 @@ function extractImageUrl(payload: JsonRecord): string | null {
   const type = extractTextValue(payload.type);
   const hasImageMessage = Boolean(nestedMessage?.imageMessage);
 
-  // PRIORITY 1: Use WAHA download API (resolves via configured WAHA_URL, works on remote deployments)
-  // media.url from WAHA often uses localhost which fails on cloud deployments like Koyeb
+  // PRIORITY 1: Check if WAHA's local cache URL natively exists (often available for Product/Interactive media)
+  const mediaObj = asRecord(payload.media);
+  if (mediaObj && mediaObj.url) {
+    return `waha-file-url:${mediaObj.url}`;
+  }
+
+  // PRIORITY 2: Use WAHA download API if id exists but no direct url
   if (hasMedia || type === 'image' || type === 'video' || hasImageMessage) {
     const messageId = extractMessageId(payload);
     if (messageId) {
