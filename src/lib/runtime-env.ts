@@ -19,6 +19,7 @@ export type RuntimeEnvKey =
   | 'NEW_LEAD_MAX_USER_MESSAGES'
   | 'TELEGRAM_BOT_TOKEN'
   | 'TELEGRAM_CHAT_ID'
+  | 'MERCHANT_PRICING_SHEET_URL'
   | 'GOOGLE_SHEET_ID'
   | 'GOOGLE_SHEET_NAME'
   | 'GOOGLE_SERVICE_ACCOUNT_EMAIL'
@@ -133,6 +134,16 @@ const RUNTIME_ENV_DEFINITIONS: RuntimeEnvDefinition[] = [
     description:
       'Satu atau beberapa chat ID tujuan notifikasi Telegram (pisahkan dengan koma atau baris baru).',
     defaultValue: '',
+    isSecret: false,
+    isMultiline: false,
+  },
+  {
+    key: 'MERCHANT_PRICING_SHEET_URL',
+    label: 'Merchant Pricing Sheet URL',
+    description:
+      'URL Google Spreadsheet katalog merchant untuk referensi harga/BEP AI.',
+    defaultValue:
+      'https://docs.google.com/spreadsheets/d/e/2PACX-1vSCz5TL3fIx_hd9Z5pikqELuK4-wq2qX9Wy_aQ-Oop3NLvaUM65RCE7nBrvd0Nj9LlPCEVtZJlbtrTn/pub?gid=0&single=true&output=csv',
     isSecret: false,
     isMultiline: false,
   },

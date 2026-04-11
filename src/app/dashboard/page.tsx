@@ -124,6 +124,7 @@ type DashboardLogsResponse = {
   error?: string;
   checkedAt?: string;
   redisAvailable?: boolean;
+  storage?: 'redis' | 'memory';
   logs?: DashboardLogItem[];
 };
 
@@ -334,6 +335,7 @@ export default function DashboardPage() {
   const [logStatusText, setLogStatusText] = useState('');
   const [logSearchQuery, setLogSearchQuery] = useState('');
   const [logLevelFilter, setLogLevelFilter] = useState<LogsLevelFilter>('all');
+  const [logStorageMode, setLogStorageMode] = useState<'redis' | 'memory'>('memory');
   const [isLogsClearing, setIsLogsClearing] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
@@ -521,6 +523,7 @@ export default function DashboardPage() {
       }
 
       setDashboardLogs(payload.logs);
+      setLogStorageMode(payload.storage === 'redis' ? 'redis' : 'memory');
       setLogCheckedAt(
         typeof payload.checkedAt === 'string'
           ? payload.checkedAt
@@ -624,7 +627,7 @@ export default function DashboardPage() {
   }, [dashboardLogs, logLevelFilter, logSearchQuery]);
 
   const handleClearDashboardLogs = useCallback(async () => {
-    const approved = window.confirm('Hapus semua dashboard logs yang tersimpan di Redis?');
+    const approved = window.confirm('Hapus semua dashboard logs yang tersimpan?');
     if (!approved) {
       return;
     }
@@ -1280,6 +1283,9 @@ export default function DashboardPage() {
               </span>
               <span className="rounded-lg bg-rose-100 px-2 py-1 font-semibold text-rose-700">
                 Error: {logErrorCount}
+              </span>
+              <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold">
+                Storage: {logStorageMode === 'redis' ? 'Redis' : 'Memory'}
               </span>
               <span className="rounded-lg bg-slate-100 px-2 py-1">
                 Dicek: {formatGeneratedAt(logCheckedAt)}

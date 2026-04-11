@@ -40,6 +40,7 @@ export async function GET(request: NextRequest) {
       ok: true,
       checkedAt: new Date().toISOString(),
       redisAvailable: result.redisAvailable,
+      storage: result.storage,
       logs: result.logs,
     });
   } catch (error) {
@@ -64,21 +65,11 @@ export async function DELETE(request: NextRequest) {
   try {
     const result = await clearDashboardLogs();
 
-    if (!result.redisAvailable) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: 'Redis tidak tersedia. Log tidak dapat dibersihkan.',
-        },
-        {
-          status: 503,
-        }
-      );
-    }
-
     return NextResponse.json({
       ok: true,
       removed: result.removed,
+      redisAvailable: result.redisAvailable,
+      storage: result.storage,
       checkedAt: new Date().toISOString(),
     });
   } catch (error) {

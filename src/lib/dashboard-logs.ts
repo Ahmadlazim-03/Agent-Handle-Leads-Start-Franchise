@@ -34,6 +34,8 @@ const MAX_SOURCE_LENGTH = 40;
 const MAX_MESSAGE_LENGTH = 420;
 const MAX_DETAILS_LENGTH = 1_400;
 
+const inMemoryDashboardLogs: DashboardLogEntry[] = [];
+
 function limitText(value: string, maxLength: number): string {
   if (value.length <= maxLength) {
     return value;
@@ -121,8 +123,55 @@ function parseStoredLog(value: string): DashboardLogEntry | null {
   }
 }
 
+function appendToInMemory(entry: DashboardLogEntry): void {
+  inMemoryDashboardLogs.unshift(entry);
+  if (inMemoryDashboardLogs.length > MAX_LOG_ITEMS) {
+    inMemoryDashboardLogs.length = MAX_LOG_ITEMS;
+  }
+}
+
+function resolveLimit(value: number | undefined): number {
+  return Number.isFinite(value)
+    ? Math.max(1, Math.min(Number(value), MAX_FETCH_LIMIT))
+    : DEFAULT_FETCH_LIMIT;
+}
+
+function filterLogs(logs: DashboardLogEntry[], query: DashboardLogQuery): DashboardLogEntry[] {
+  const normalizedLevel = normalizeText(query.level).toLowerCase();
+  const normalizedSource = normalizeText(query.source).toLowerCase();
+  const normalizedSearch = normalizeText(query.search).toLowerCase();
+
+  const filtered = logs.filter((entry) => {
+    if (normalizedLevel && normalizedLevel !== 'all' && entry.level !== normalizedLevel) {
+      return false;
+    }
+
+    if (
+      normalizedSource &&
+      normalizedSource !== 'all' &&
+      entry.source.toLowerCase() !== normalizedSource
+    ) {
+      return false;
+    }
+
+    if (!normalizedSearch) {
+      return true;
+    }
+
+    return (
+      entry.message.toLowerCase().includes(normalizedSearch) ||
+      entry.details.toLowerCase().includes(normalizedSearch) ||
+      entry.source.toLowerCase().includes(normalizedSearch)
+    );
+  });
+
+  const limit = resolveLimit(query.limit);
+  return filtered.slice(0, limit);
+}
+
 export async function appendDashboardLog(input: AppendDashboardLogInput): Promise<void> {
   const entry = toRedisLogEntry(input);
+  appendToInMemory(entry);
 
   if (entry.level === 'error') {
     console.error(`[${entry.source}] ${entry.message}`, entry.details);
@@ -148,22 +197,16 @@ export async function appendDashboardLog(input: AppendDashboardLogInput): Promis
 export async function listDashboardLogs(query: DashboardLogQuery): Promise<{
   logs: DashboardLogEntry[];
   redisAvailable: boolean;
+  storage: 'redis' | 'memory';
 }> {
   const client = await getRedisClient();
   if (!client) {
     return {
-      logs: [],
+      logs: filterLogs(inMemoryDashboardLogs, query),
       redisAvailable: false,
+      storage: 'memory',
     };
   }
-
-  const limit = Number.isFinite(query.limit)
-    ? Math.max(1, Math.min(Number(query.limit), MAX_FETCH_LIMIT))
-    : DEFAULT_FETCH_LIMIT;
-
-  const normalizedLevel = normalizeText(query.level).toLowerCase();
-  const normalizedSource = normalizeText(query.source).toLowerCase();
-  const normalizedSearch = normalizeText(query.search).toLowerCase();
 
   try {
     const rawValues = await client.lRange(DASHBOARD_LOGS_KEY, 0, MAX_LOG_ITEMS - 1);
@@ -171,35 +214,17 @@ export async function listDashboardLogs(query: DashboardLogQuery): Promise<{
       .map((entry) => parseStoredLog(entry))
       .filter((entry): entry is DashboardLogEntry => entry !== null);
 
-    const filtered = parsedLogs.filter((entry) => {
-      if (normalizedLevel && normalizedLevel !== 'all' && entry.level !== normalizedLevel) {
-        return false;
-      }
-
-      if (normalizedSource && normalizedSource !== 'all' && entry.source.toLowerCase() !== normalizedSource) {
-        return false;
-      }
-
-      if (!normalizedSearch) {
-        return true;
-      }
-
-      return (
-        entry.message.toLowerCase().includes(normalizedSearch) ||
-        entry.details.toLowerCase().includes(normalizedSearch) ||
-        entry.source.toLowerCase().includes(normalizedSearch)
-      );
-    });
-
     return {
-      logs: filtered.slice(0, limit),
+      logs: filterLogs(parsedLogs, query),
       redisAvailable: true,
+      storage: 'redis',
     };
   } catch (error) {
     console.error('[DashboardLogs] Failed to list logs:', error);
     return {
-      logs: [],
+      logs: filterLogs(inMemoryDashboardLogs, query),
       redisAvailable: true,
+      storage: 'memory',
     };
   }
 }
@@ -207,26 +232,35 @@ export async function listDashboardLogs(query: DashboardLogQuery): Promise<{
 export async function clearDashboardLogs(): Promise<{
   redisAvailable: boolean;
   removed: number;
+  storage: 'redis' | 'memory';
 }> {
+  const removedFromMemory = inMemoryDashboardLogs.length;
+  inMemoryDashboardLogs.length = 0;
+
   const client = await getRedisClient();
   if (!client) {
     return {
       redisAvailable: false,
-      removed: 0,
+      removed: removedFromMemory,
+      storage: 'memory',
     };
   }
 
   try {
-    const removed = await client.del(DASHBOARD_LOGS_KEY);
+    const redisLength = await client.lLen(DASHBOARD_LOGS_KEY);
+    await client.del(DASHBOARD_LOGS_KEY);
+
     return {
       redisAvailable: true,
-      removed,
+      removed: Math.max(removedFromMemory, Number(redisLength)),
+      storage: 'redis',
     };
   } catch (error) {
     console.error('[DashboardLogs] Failed to clear logs:', error);
     return {
       redisAvailable: true,
-      removed: 0,
+      removed: removedFromMemory,
+      storage: 'memory',
     };
   }
 }

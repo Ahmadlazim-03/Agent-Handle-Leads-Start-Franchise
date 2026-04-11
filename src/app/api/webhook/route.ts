@@ -36,6 +36,7 @@ import {
   resolveBrandProposalRequest,
 } from '@/lib/proposals';
 import { getRuntimeSystemPrompt } from '@/lib/prompt-config';
+import { getMerchantPricingPromptSection } from '@/lib/merchant-pricing';
 
 export const runtime = 'nodejs';
 
@@ -348,6 +349,18 @@ export async function POST(request: NextRequest) {
     dedupeMarked = dedupeKey !== null;
 
     const leadIdentifier = resolveLeadIdentifier(chatIdentifier, chatId);
+    void appendDashboardLog({
+      level: 'info',
+      source: 'webhook',
+      message: 'Webhook text message diproses.',
+      details: {
+        chatId,
+        leadIdentifier,
+        dedupeKey,
+        messagePreview: normalizeWhitespace(messageText).slice(0, 180),
+      },
+    });
+
     const runtimeSystemPrompt = await getRuntimeSystemPrompt();
     const isComplete = await handleConversation(
       chatId,
@@ -593,10 +606,10 @@ function summarizeFieldValue(value?: string): string {
   return normalizeWhitespace(value);
 }
 
-function buildRuntimeSystemMessage(
+async function buildRuntimeSystemMessage(
   runtimeSystemPrompt: string,
   collectedData: Record<string, string>
-): string {
+): Promise<string> {
   const snapshot = [
     `sumberInfo=${summarizeFieldValue(collectedData.sumberInfo)}`,
     `biodata=${summarizeFieldValue(collectedData.biodata)}`,
@@ -609,7 +622,12 @@ function buildRuntimeSystemMessage(
   const missingSummary = missingFields.length > 0 ? missingFields.join(', ') : 'tidak ada';
 
   const basePrompt = runtimeSystemPrompt.trim() || DEFAULT_RUNTIME_SYSTEM_PROMPT;
-  return `${basePrompt}\nDATA SAAT INI: ${snapshot}\nFIELD BELUM LENGKAP: ${missingSummary}.`;
+  const merchantPricingContext = await getMerchantPricingPromptSection();
+  const merchantContextSection = merchantPricingContext
+    ? `\n${merchantPricingContext}`
+    : '';
+
+  return `${basePrompt}${merchantContextSection}\nDATA SAAT INI: ${snapshot}\nFIELD BELUM LENGKAP: ${missingSummary}.`;
 }
 
 function normalizeBudgetText(value: string): string {
@@ -1315,7 +1333,7 @@ async function handleConversation(
     stateWithUserMessage.collectedData
   );
 
-  const runtimeSystemMessage = buildRuntimeSystemMessage(
+  const runtimeSystemMessage = await buildRuntimeSystemMessage(
     runtimeSystemPrompt,
     stateWithUserMessage.collectedData
   );
