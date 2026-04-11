@@ -400,6 +400,7 @@ export async function POST(request: NextRequest) {
         dedupeKey,
         messagePreview: normalizeWhitespace(effectiveMessageText).slice(0, 180),
         hasImage: Boolean(imageUrl),
+        rawPayload: payload,
       },
     });
 
