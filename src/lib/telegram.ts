@@ -1,6 +1,7 @@
 import { LeadData } from './openai';
 import { getRuntimeEnvValues } from './runtime-env';
 import { buildTelegramChatCandidates, parseTelegramChatIds } from './telegram-chat-id';
+import { appendDashboardLog } from './dashboard-logs';
 
 async function getTelegramConfig(): Promise<{
   botToken: string;
@@ -18,6 +19,12 @@ async function getTelegramConfig(): Promise<{
     console.error(
       'Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID (supports comma/newline-separated values) in runtime config/dashboard or environment variables.'
     );
+    void appendDashboardLog({
+      level: 'warn',
+      source: 'telegram',
+      message: 'Konfigurasi Telegram belum lengkap.',
+      details: 'TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID tidak tersedia.',
+    });
     return null;
   }
 
@@ -126,6 +133,15 @@ async function sendTelegramHtmlMessage(message: string): Promise<boolean> {
 
     if (deliveredCount === 0) {
       console.error('Failed to send Telegram notification to all configured chat IDs.');
+      void appendDashboardLog({
+        level: 'error',
+        source: 'telegram',
+        message: 'Notifikasi Telegram gagal dikirim ke semua target.',
+        details: {
+          configuredTargets: config.chatIds.length,
+          failedTargets,
+        },
+      });
       return false;
     }
 
@@ -133,15 +149,39 @@ async function sendTelegramHtmlMessage(message: string): Promise<boolean> {
       console.error(
         `Telegram notification partially sent (${deliveredCount}/${config.chatIds.length}). Failed targets: ${failedTargets.join(', ')}`
       );
+      void appendDashboardLog({
+        level: 'warn',
+        source: 'telegram',
+        message: 'Notifikasi Telegram terkirim sebagian.',
+        details: {
+          deliveredCount,
+          configuredTargets: config.chatIds.length,
+          failedTargets,
+        },
+      });
       return false;
     }
 
     console.log(
       `Telegram notification sent successfully to ${deliveredCount} chat ID(s).`
     );
+    void appendDashboardLog({
+      level: 'info',
+      source: 'telegram',
+      message: 'Notifikasi Telegram berhasil dikirim ke semua target.',
+      details: {
+        deliveredCount,
+      },
+    });
     return true;
   } catch (error) {
     console.error('Error sending Telegram notification:', error);
+    void appendDashboardLog({
+      level: 'error',
+      source: 'telegram',
+      message: 'Terjadi exception saat mengirim Telegram.',
+      details: error,
+    });
     return false;
   }
 }

@@ -11,6 +11,7 @@ import {
   sendTelegramNotification,
   sendTelegramDealMeetingNotification,
 } from '@/lib/telegram';
+import { appendDashboardLog } from '@/lib/dashboard-logs';
 import {
   saveIncomingLeadNumber,
   saveKnownLeadNumber,
@@ -361,6 +362,13 @@ export async function POST(request: NextRequest) {
     if (dedupeMarked && dedupeKey) {
       processedMessageIds.delete(dedupeKey);
     }
+
+    void appendDashboardLog({
+      level: 'error',
+      source: 'webhook',
+      message: 'Webhook gagal diproses.',
+      details: error,
+    });
 
     console.error('Webhook error:', error);
     return NextResponse.json(
@@ -1267,6 +1275,31 @@ async function handleConversation(
       console.error(
         `Deal+meeting flow completed with errors for ${chatId}: telegramDealSent=${telegramDealSent}, sheetSaved=${sheetSaved}, labelTagged=${labelTagged}, removedFromProcessing=${removedFromProcessing}, knownSavedToRedis=${knownSavedToRedis}`
       );
+
+      void appendDashboardLog({
+        level: 'warn',
+        source: 'webhook',
+        message: 'Deal + meeting selesai tetapi sebagian integrasi gagal.',
+        details: {
+          chatId,
+          leadIdentifier,
+          telegramDealSent,
+          sheetSaved,
+          labelTagged,
+          removedFromProcessing,
+          knownSavedToRedis,
+        },
+      });
+    } else {
+      void appendDashboardLog({
+        level: 'info',
+        source: 'webhook',
+        message: 'Deal + meeting selesai dengan seluruh integrasi sukses.',
+        details: {
+          chatId,
+          leadIdentifier,
+        },
+      });
     }
 
     markConversationComplete(chatId);
@@ -1410,6 +1443,32 @@ async function handleConversation(
       console.error(
         `Lead integrations completed with errors for ${chatId}: sheetSaved=${sheetSaved}, telegramSent=${telegramSent}, labelTagged=${labelTagged}, removedFromProcessing=${removedFromProcessing}, knownSavedToRedis=${knownSavedToRedis}`
       );
+
+      void appendDashboardLog({
+        level: 'warn',
+        source: 'webhook',
+        message: 'Lead complete tetapi sebagian integrasi gagal.',
+        details: {
+          chatId,
+          leadIdentifier,
+          sheetSaved,
+          telegramSent,
+          labelTagged,
+          removedFromProcessing,
+          knownSavedToRedis,
+        },
+      });
+    } else {
+      void appendDashboardLog({
+        level: 'info',
+        source: 'webhook',
+        message: 'Lead complete dan semua integrasi berhasil.',
+        details: {
+          chatId,
+          leadIdentifier,
+          biodata: finalLeadData.biodata,
+        },
+      });
     }
 
     markConversationComplete(chatId);

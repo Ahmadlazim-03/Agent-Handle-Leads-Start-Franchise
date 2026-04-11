@@ -108,6 +108,25 @@ type RuntimeEnvMutationResponse = {
   item?: RuntimeEnvItem;
 };
 
+type DashboardLogLevel = 'info' | 'warn' | 'error';
+
+type DashboardLogItem = {
+  id: string;
+  level: DashboardLogLevel;
+  source: string;
+  message: string;
+  details: string;
+  createdAt: string;
+};
+
+type DashboardLogsResponse = {
+  ok?: boolean;
+  error?: string;
+  checkedAt?: string;
+  redisAvailable?: boolean;
+  logs?: DashboardLogItem[];
+};
+
 const EMPTY_DASHBOARD: DashboardResponse = {
   generatedAt: '',
   leadLabelName: 'Lead Baru',
@@ -181,6 +200,8 @@ type SourceFilter =
   | 'in_progress'
   | 'berlabel';
 
+type LogsLevelFilter = 'all' | DashboardLogLevel;
+
 function formatGeneratedAt(value: string): string {
   if (!value) {
     return '-';
@@ -249,6 +270,30 @@ function runtimeEnvSourceLabel(source: RuntimeEnvSource): string {
   return 'Default Fallback';
 }
 
+function logsLevelBadgeClass(level: DashboardLogLevel): string {
+  if (level === 'error') {
+    return 'bg-rose-100 text-rose-700 border-rose-300';
+  }
+
+  if (level === 'warn') {
+    return 'bg-amber-100 text-amber-800 border-amber-300';
+  }
+
+  return 'bg-cyan-100 text-cyan-700 border-cyan-300';
+}
+
+function logsLevelLabel(level: DashboardLogLevel): string {
+  if (level === 'error') {
+    return 'ERROR';
+  }
+
+  if (level === 'warn') {
+    return 'WARN';
+  }
+
+  return 'INFO';
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [dashboard, setDashboard] = useState<DashboardResponse>(EMPTY_DASHBOARD);
@@ -282,6 +327,14 @@ export default function DashboardPage() {
   const [runtimeEnvBusyKey, setRuntimeEnvBusyKey] = useState('');
   const [runtimeEnvStatusText, setRuntimeEnvStatusText] = useState('');
   const [runtimeEnvErrorText, setRuntimeEnvErrorText] = useState('');
+  const [dashboardLogs, setDashboardLogs] = useState<DashboardLogItem[]>([]);
+  const [logCheckedAt, setLogCheckedAt] = useState('');
+  const [isLogLoading, setIsLogLoading] = useState(true);
+  const [logErrorText, setLogErrorText] = useState('');
+  const [logStatusText, setLogStatusText] = useState('');
+  const [logSearchQuery, setLogSearchQuery] = useState('');
+  const [logLevelFilter, setLogLevelFilter] = useState<LogsLevelFilter>('all');
+  const [isLogsClearing, setIsLogsClearing] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const isBulkRunning =
@@ -291,6 +344,7 @@ export default function DashboardPage() {
   const runtimeEnvConnectedCount = runtimeEnvItems.filter(
     (item) => item.configured
   ).length;
+  const logErrorCount = dashboardLogs.filter((entry) => entry.level === 'error').length;
 
   const loadDashboard = useCallback(async (showRefreshing = false) => {
     if (showRefreshing) {
@@ -443,14 +497,66 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const loadDashboardLogs = useCallback(async (showLoading = true) => {
+    if (showLoading) {
+      setIsLogLoading(true);
+    }
+
+    setLogErrorText('');
+
+    try {
+      const response = await fetch('/api/dashboard/logs?limit=160', {
+        method: 'GET',
+        cache: 'no-store',
+      });
+
+      const payload = (await response.json()) as DashboardLogsResponse;
+
+      if (!response.ok || !payload.ok || !Array.isArray(payload.logs)) {
+        const message =
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Gagal memuat dashboard logs.';
+        throw new Error(message);
+      }
+
+      setDashboardLogs(payload.logs);
+      setLogCheckedAt(
+        typeof payload.checkedAt === 'string'
+          ? payload.checkedAt
+          : new Date().toISOString()
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Gagal memuat dashboard logs.';
+      setLogErrorText(message);
+    } finally {
+      setIsLogLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void Promise.all([
       loadDashboard(false),
       loadPromptConfig(false),
       loadIntegrationStatus(),
       loadRuntimeEnvConfig(),
+      loadDashboardLogs(),
     ]);
-  }, [loadDashboard, loadPromptConfig, loadIntegrationStatus, loadRuntimeEnvConfig]);
+  }, [
+    loadDashboard,
+    loadPromptConfig,
+    loadIntegrationStatus,
+    loadRuntimeEnvConfig,
+    loadDashboardLogs,
+  ]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void loadDashboardLogs(false);
+    }, 15_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [loadDashboardLogs]);
 
   const filteredRows = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -496,6 +602,66 @@ export default function DashboardPage() {
       );
     });
   }, [dashboard.rows, searchQuery, sourceFilter, statusFilter]);
+
+  const filteredLogs = useMemo(() => {
+    const query = logSearchQuery.trim().toLowerCase();
+
+    return dashboardLogs.filter((entry) => {
+      if (logLevelFilter !== 'all' && entry.level !== logLevelFilter) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      return (
+        entry.message.toLowerCase().includes(query) ||
+        entry.details.toLowerCase().includes(query) ||
+        entry.source.toLowerCase().includes(query)
+      );
+    });
+  }, [dashboardLogs, logLevelFilter, logSearchQuery]);
+
+  const handleClearDashboardLogs = useCallback(async () => {
+    const approved = window.confirm('Hapus semua dashboard logs yang tersimpan di Redis?');
+    if (!approved) {
+      return;
+    }
+
+    setIsLogsClearing(true);
+    setLogStatusText('');
+    setLogErrorText('');
+
+    try {
+      const response = await fetch('/api/dashboard/logs', {
+        method: 'DELETE',
+      });
+
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        error?: string;
+        removed?: number;
+      };
+
+      if (!response.ok || !payload.ok) {
+        const message =
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Gagal menghapus dashboard logs.';
+        throw new Error(message);
+      }
+
+      setLogStatusText(`Dashboard logs dibersihkan. Item terhapus: ${payload.removed ?? 0}.`);
+      await loadDashboardLogs(false);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Gagal menghapus dashboard logs.';
+      setLogErrorText(message);
+    } finally {
+      setIsLogsClearing(false);
+    }
+  }, [loadDashboardLogs]);
 
   const handleKnownMutation = useCallback(
     async (action: 'mark_known' | 'unmark_known', phoneNumber: string) => {
@@ -983,6 +1149,7 @@ export default function DashboardPage() {
                     loadPromptConfig(true),
                     loadIntegrationStatus(),
                     loadRuntimeEnvConfig(),
+                    loadDashboardLogs(false),
                   ])
                 }
                 disabled={
@@ -992,11 +1159,17 @@ export default function DashboardPage() {
                   isPromptLoading ||
                   isIntegrationLoading ||
                   isRuntimeEnvLoading ||
+                  isLogLoading ||
+                  isLogsClearing ||
                   isLoggingOut
                 }
                 className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isRefreshing || isPromptLoading || isIntegrationLoading || isRuntimeEnvLoading
+                {isRefreshing ||
+                isPromptLoading ||
+                isIntegrationLoading ||
+                isRuntimeEnvLoading ||
+                isLogLoading
                   ? 'Refreshing...'
                   : 'Refresh Data'}
               </button>
@@ -1086,6 +1259,131 @@ export default function DashboardPage() {
               {integrationErrorText}
             </p>
           ) : null}
+        </div>
+
+        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+                Runtime Logs
+              </p>
+              <h2 className="mt-2 text-xl font-semibold text-slate-900">Logs Aktivitas Bot</h2>
+              <p className="mt-1 max-w-3xl text-sm text-slate-600">
+                Monitoring event webhook, notifikasi Telegram, dan penulisan Spreadsheet
+                secara real-time untuk mempercepat debugging production.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold">
+                Total: {dashboardLogs.length}
+              </span>
+              <span className="rounded-lg bg-rose-100 px-2 py-1 font-semibold text-rose-700">
+                Error: {logErrorCount}
+              </span>
+              <span className="rounded-lg bg-slate-100 px-2 py-1">
+                Dicek: {formatGeneratedAt(logCheckedAt)}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-4">
+            <input
+              value={logSearchQuery}
+              onChange={(event) => setLogSearchQuery(event.target.value)}
+              placeholder="Cari source, message, atau detail..."
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 transition focus:ring md:col-span-2"
+            />
+
+            <select
+              value={logLevelFilter}
+              onChange={(event) => setLogLevelFilter(event.target.value as LogsLevelFilter)}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none ring-cyan-400 transition focus:ring"
+            >
+              <option value="all">Semua Level</option>
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info">Info</option>
+            </select>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void loadDashboardLogs(false)}
+                disabled={isLogLoading || isLogsClearing}
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isLogLoading ? 'Loading...' : 'Refresh Logs'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleClearDashboardLogs()}
+                disabled={isLogLoading || isLogsClearing}
+                className="w-full rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isLogsClearing ? 'Clearing...' : 'Clear Logs'}
+              </button>
+            </div>
+          </div>
+
+          {logStatusText ? (
+            <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {logStatusText}
+            </p>
+          ) : null}
+
+          {logErrorText ? (
+            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {logErrorText}
+            </p>
+          ) : null}
+
+          <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-slate-950">
+            <div className="max-h-[440px] overflow-y-auto">
+              {isLogLoading ? (
+                <p className="px-4 py-10 text-center text-sm text-slate-300">Memuat logs...</p>
+              ) : filteredLogs.length === 0 ? (
+                <p className="px-4 py-10 text-center text-sm text-slate-400">
+                  Tidak ada log yang cocok dengan filter saat ini.
+                </p>
+              ) : (
+                <div className="divide-y divide-slate-800">
+                  {filteredLogs.map((entry) => (
+                    <div key={entry.id} className="px-4 py-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span
+                          className={`rounded-full border px-2 py-1 font-semibold ${logsLevelBadgeClass(
+                            entry.level
+                          )}`}
+                        >
+                          {logsLevelLabel(entry.level)}
+                        </span>
+                        <span className="rounded-full bg-slate-800 px-2 py-1 font-semibold uppercase tracking-wide text-slate-200">
+                          {entry.source}
+                        </span>
+                        <span className="text-slate-400">{formatGeneratedAt(entry.createdAt)}</span>
+                      </div>
+
+                      <p className="mt-2 font-mono text-[13px] leading-6 text-slate-100">
+                        {entry.message}
+                      </p>
+
+                      {entry.details ? (
+                        <details className="mt-2 rounded-lg border border-slate-800 bg-slate-900/80 p-2">
+                          <summary className="cursor-pointer text-xs font-semibold text-slate-300">
+                            Detail
+                          </summary>
+                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-slate-300">
+                            {entry.details}
+                          </pre>
+                        </details>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

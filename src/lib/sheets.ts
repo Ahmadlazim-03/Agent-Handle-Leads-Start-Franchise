@@ -2,6 +2,7 @@ import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
 import { LeadData } from './openai';
 import { getRuntimeEnvValues } from './runtime-env';
+import { appendDashboardLog } from './dashboard-logs';
 
 const DEFAULT_GOOGLE_SHEET_SOURCE =
   'https://docs.google.com/spreadsheets/d/1kn23ILLqav6yn-FOSqsHxPIJNAeWKth-Jhk_jsJu6b0/edit?gid=2093370014#gid=2093370014';
@@ -286,6 +287,11 @@ export async function appendLeadToSheet(
       console.error(
         'No usable Google Sheets write credentials. Set valid GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY in runtime config/dashboard or .env.local.'
       );
+      void appendDashboardLog({
+        level: 'warn',
+        source: 'spreadsheet',
+        message: 'Spreadsheet credentials belum valid untuk penulisan lead.',
+      });
       return false;
     }
 
@@ -318,9 +324,25 @@ export async function appendLeadToSheet(
     await sheet.addRow(rowObject);
 
     console.log(`Lead appended to Google Sheets: ${lead.biodata}`);
+    void appendDashboardLog({
+      level: 'info',
+      source: 'spreadsheet',
+      message: 'Lead berhasil ditulis ke Google Sheets.',
+      details: {
+        sheetName: config.sheetName,
+        phoneNumber: normalizeLeadIdentifier(phoneNumber),
+        biodata: lead.biodata,
+      },
+    });
     return true;
   } catch (error) {
     console.error('Error appending lead to Google Sheets:', error);
+    void appendDashboardLog({
+      level: 'error',
+      source: 'spreadsheet',
+      message: 'Gagal menulis lead ke Google Sheets.',
+      details: error,
+    });
     return false;
   }
 }
