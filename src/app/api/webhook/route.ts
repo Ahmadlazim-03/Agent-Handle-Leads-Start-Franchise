@@ -10,6 +10,7 @@ import { appendLeadToSheet } from '@/lib/sheets';
 import {
   sendTelegramNotification,
   sendTelegramDealMeetingNotification,
+  sendTelegramIntentNotification,
 } from '@/lib/telegram';
 import { appendDashboardLog } from '@/lib/dashboard-logs';
 import {
@@ -21,6 +22,8 @@ import {
 import {
   parseLeadFromMessage,
   stripLeadPayload,
+  INTENT_FRANCHISOR_TAG,
+  INTENT_OTHER_TAG,
 } from '@/prompts/agent';
 import { DEFAULT_RUNTIME_SYSTEM_PROMPT } from '@/prompts/runtime-system';
 import {
@@ -325,13 +328,17 @@ export async function POST(request: NextRequest) {
     }
 
     const messageText = extractMessageText(payload);
+    const imageUrl = extractImageUrl(payload);
 
     if (chatId && isGroupOrBroadcastIdentifier(chatId)) {
       console.log(`Ignoring group/broadcast chatId=${chatId}`);
       return NextResponse.json({ status: 'ignored_group_or_broadcast' });
     }
 
-    if (!chatId || !messageText) {
+    // Allow image-only messages (no text) to pass through with placeholder
+    const effectiveMessageText = messageText || (imageUrl ? '[User mengirim gambar]' : null);
+
+    if (!chatId || !effectiveMessageText) {
       console.log(
         `Ignoring non-text webhook event source=${chatIdentifier || 'unknown'}`
       );
@@ -356,7 +363,7 @@ export async function POST(request: NextRequest) {
     }
 
     messageId = extractMessageId(payload);
-    dedupeKey = messageId ?? buildSyntheticMessageId(payload, chatId, messageText);
+    dedupeKey = messageId ?? buildSyntheticMessageId(payload, chatId, effectiveMessageText);
 
     if (!shouldProcessMessage(dedupeKey)) {
       console.log(
@@ -370,22 +377,24 @@ export async function POST(request: NextRequest) {
     void appendDashboardLog({
       level: 'info',
       source: 'webhook',
-      message: 'Webhook text message diproses.',
+      message: imageUrl ? 'Webhook image message diproses.' : 'Webhook text message diproses.',
       details: {
         chatId,
         leadIdentifier,
         dedupeKey,
-        messagePreview: normalizeWhitespace(messageText).slice(0, 180),
+        messagePreview: normalizeWhitespace(effectiveMessageText).slice(0, 180),
+        hasImage: Boolean(imageUrl),
       },
     });
 
     const runtimeSystemPrompt = await getRuntimeSystemPrompt();
     const isComplete = await handleConversation(
       chatId,
-      messageText,
+      effectiveMessageText,
       leadIdentifier,
       identifierCandidates,
-      runtimeSystemPrompt
+      runtimeSystemPrompt,
+      imageUrl
     );
 
     return NextResponse.json({ status: isComplete ? 'complete' : 'processed' });
@@ -481,6 +490,30 @@ function extractMessageText(payload: JsonRecord): string | null {
   return null;
 }
 
+function extractImageUrl(payload: JsonRecord): string | null {
+  const nestedMessage = asRecord(payload.message);
+  if (!nestedMessage) {
+    // Check top-level for WAHA-style media
+    const directMedia = extractTextValue(payload.mediaUrl as string) ?? extractTextValue(payload.media_url as string);
+    if (directMedia) {
+      return directMedia;
+    }
+    return null;
+  }
+
+  const imageMessage = asRecord(nestedMessage.imageMessage);
+  if (!imageMessage) {
+    return null;
+  }
+
+  // WAHA Plus provides mediaUrl directly; standard WAHA provides url
+  return (
+    extractTextValue(imageMessage.mediaUrl as string) ??
+    extractTextValue(imageMessage.url as string) ??
+    extractTextValue(imageMessage.directPath as string) ??
+    null
+  );
+}
 function extractBoolean(value: unknown): boolean {
   if (typeof value === 'boolean') {
     return value;
@@ -746,7 +779,7 @@ function extractBudget(text: string): string {
   const numericBudgetMatch = text.match(
     /(?:rp\.?\s*)?\d{1,3}(?:[.,]\d{3})*(?:\s*(?:juta|jt|miliar|m|ribu|rb))?(?:\s*(?:-|sampai|hingga|sd)\s*(?:rp\.?\s*)?\d{1,3}(?:[.,]\d{3})*(?:\s*(?:juta|jt|miliar|m|ribu|rb))?)?/i
   );
-  if (numericBudgetMatch) {
+  if (numericBudgetMatch && numericBudgetMatch[0].match(/\d/)) {
     return normalizeBudgetText(numericBudgetMatch[0]);
   }
 
@@ -761,7 +794,7 @@ function extractBudget(text: string): string {
 function extractStartPlan(text: string): string {
   const lower = text.toLowerCase();
   const directPlanMatch = lower.match(
-    /(bulan depan|minggu depan|tahun depan|tahun ini|bulan ini|akhir bulan ini|awal bulan depan|secepatnya|segera|q[1-4]|kuartal\s*[1-4])/i
+    /(secepatnya|segera|nanti|belum|nnti|kapan-kapan|bulan depan|minggu depan|tahun depan|tahun ini|bulan ini|akhir bulan ini|awal bulan depan|q[1-4]|kuartal\s*[1-4]|\d+\s*(?:hari|minggu|bulan|tahun)\s*(?:lagi|dari sekarang))/i
   );
   if (directPlanMatch) {
     return normalizeWhitespace(directPlanMatch[0]);
@@ -1340,7 +1373,7 @@ function buildProposalLinkMessage(
 async function tryHandleProposalIntent(
   chatId: string,
   messageText: string
-): Promise<boolean> {
+): Promise<{ handled: boolean; proposalContext?: string }> {
   let proposalLookup = await resolveBrandProposalRequest(messageText);
 
   const recentUserContext = buildRecentUserContextForProposal(chatId);
@@ -1364,7 +1397,7 @@ async function tryHandleProposalIntent(
   }
 
   if (!proposalLookup.isProposalIntent) {
-    return false;
+    return { handled: false };
   }
 
   if (!proposalLookup.proposal) {
@@ -1388,31 +1421,14 @@ async function tryHandleProposalIntent(
       );
     }
 
-    return true;
+    return { handled: true };
   }
 
+  // Instead of sending a template, return proposal info for AI to handle naturally
   const proposal = proposalLookup.proposal;
-  const proposalMessage = buildProposalLinkMessage(
-    proposal.brandName,
-    proposal.fileUrl,
-    proposal.caption
-  );
+  const proposalContext = `\n[PROPOSAL TERSEDIA] User meminta proposal. Brand: "${proposal.brandName}". Link proposal: ${proposal.fileUrl}. Berikan link ini ke user dengan kata-kata natural dan profesional. Jangan gunakan format template kaku. Setelah memberikan link, lanjutkan percakapan lead collection jika data belum lengkap.`;
 
-  await delay(AI_RESPONSE_DELAY_MS);
-
-  const linkSent = await sendWhatsAppMessage(chatId, proposalMessage);
-  if (!linkSent) {
-    console.error(
-      `Failed to send proposal link message for ${chatId} brand=${proposal.brandName}`
-    );
-  }
-
-  const assistantState = addMessageToState(chatId, 'assistant', proposalMessage);
-  if (!assistantState) {
-    console.warn(`[Conversation] Missing state for ${chatId} when saving proposal reply`);
-  }
-
-  return true;
+  return { handled: false, proposalContext };
 }
 
 async function handleConversation(
@@ -1420,7 +1436,8 @@ async function handleConversation(
   messageText: string,
   leadIdentifier: string,
   identifierCandidates: string[],
-  runtimeSystemPrompt: string
+  runtimeSystemPrompt: string,
+  imageUrl?: string | null
 ): Promise<boolean> {
   if (isGroupOrBroadcastIdentifier(chatId)) {
     console.log(`Conversation ignored for non-personal chatId=${chatId}`);
@@ -1576,8 +1593,8 @@ async function handleConversation(
     return true;
   }
 
-  const proposalHandled = await tryHandleProposalIntent(chatId, messageText);
-  if (proposalHandled) {
+  const proposalResult = await tryHandleProposalIntent(chatId, messageText);
+  if (proposalResult.handled) {
     return false;
   }
 
@@ -1585,10 +1602,16 @@ async function handleConversation(
     stateWithUserMessage.collectedData
   );
 
-  const runtimeSystemMessage = await buildRuntimeSystemMessage(
+  let runtimeSystemMessage = await buildRuntimeSystemMessage(
     runtimeSystemPrompt,
     stateWithUserMessage.collectedData
   );
+
+  // Inject proposal context into AI system message if a proposal link was found
+  if (proposalResult.proposalContext) {
+    runtimeSystemMessage += proposalResult.proposalContext;
+  }
+
   const recentConversationMessages = stateWithUserMessage.messages.slice(
     -MAX_MODEL_CONTEXT_MESSAGES
   );
@@ -1601,15 +1624,51 @@ async function handleConversation(
 
   const openaiModel = await getOpenAIModel();
 
+  // Build messages with vision support if image is present
+  type ChatMessage = {
+    role: 'system' | 'user' | 'assistant';
+    content: string | Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }>;
+  };
+
+  const systemMsg: ChatMessage = {
+    role: 'system',
+    content: runtimeSystemMessage,
+  };
+
+  const contextMessages: ChatMessage[] = recentConversationMessages.slice(0, -1).map((msg) => ({
+    role: msg.role as 'user' | 'assistant',
+    content: msg.content,
+  }));
+
+  // Build the latest user message (potentially with image)
+  const lastUserMsg = recentConversationMessages[recentConversationMessages.length - 1];
+  let latestUserMessage: ChatMessage;
+
+  if (imageUrl && lastUserMsg?.role === 'user') {
+    latestUserMessage = {
+      role: 'user',
+      content: [
+        { type: 'text', text: lastUserMsg.content },
+        { type: 'image_url', image_url: { url: imageUrl, detail: 'low' } },
+      ],
+    };
+  } else if (lastUserMsg) {
+    latestUserMessage = {
+      role: lastUserMsg.role as 'user' | 'assistant',
+      content: lastUserMsg.content,
+    };
+  } else {
+    latestUserMessage = {
+      role: 'user',
+      content: messageText,
+    };
+  }
+
+  const openaiMessages = [systemMsg, ...contextMessages, latestUserMessage];
+
   const response = await openaiClient.chat.completions.create({
     model: openaiModel,
-    messages: [
-      {
-        role: 'system',
-        content: runtimeSystemMessage,
-      },
-      ...recentConversationMessages,
-    ],
+    messages: openaiMessages as Parameters<typeof openaiClient.chat.completions.create>[0]['messages'],
     temperature: 0.45,
     max_tokens: 700,
   });
@@ -1619,6 +1678,60 @@ async function handleConversation(
   if (!aiReply) {
     console.error('Empty AI response');
     return false;
+  }
+
+  // --- Intent Detection: Franchisor or Other ---
+  const hasFranchisorIntent = aiReply.includes(INTENT_FRANCHISOR_TAG);
+  const hasOtherIntent = aiReply.includes(INTENT_OTHER_TAG);
+
+  if (hasFranchisorIntent || hasOtherIntent) {
+    const intentType = hasFranchisorIntent ? 'franchisor' : 'other';
+    const intentTag = hasFranchisorIntent ? INTENT_FRANCHISOR_TAG : INTENT_OTHER_TAG;
+
+    // Strip the intent tag from the message sent to user
+    const cleanIntentReply = formatAIReply(
+      aiReply.replace(intentTag, '').trim()
+    );
+
+    await delay(AI_RESPONSE_DELAY_MS);
+
+    const sendResult = await sendWhatsAppMessage(chatId, cleanIntentReply);
+    if (!sendResult) {
+      console.error(`Failed to deliver intent reply to ${chatId}`);
+    }
+
+    const assistantState = addMessageToState(chatId, 'assistant', cleanIntentReply);
+    if (!assistantState) {
+      console.error(`Missing conversation state for ${chatId} when saving intent reply`);
+    }
+
+    // Send Telegram notification
+    const telegramSent = await sendTelegramIntentNotification({
+      phoneNumber: leadIdentifier,
+      intentType,
+      userMessage: messageText,
+    });
+
+    if (!telegramSent) {
+      console.error(`Failed to send Telegram intent notification for ${chatId}`);
+    }
+
+    void appendDashboardLog({
+      level: 'info',
+      source: 'webhook',
+      message: `Lead intent terdeteksi: ${intentType}. Bot berhenti merespons.`,
+      details: {
+        chatId,
+        leadIdentifier,
+        intentType,
+        telegramSent,
+      },
+    });
+
+    // Stop the bot for this conversation
+    markConversationComplete(chatId);
+    await removeProcessingLeadNumber(chatId);
+    return true;
   }
 
   const parsedLeadData = parseLeadFromMessage(aiReply);
@@ -1651,7 +1764,7 @@ async function handleConversation(
   const cleanReply = stripLeadPayload(aiReplyForDelivery);
   const leadIsComplete = Boolean(finalLeadData);
   const completionReplyFallback =
-    'Terima kasih, Kakak. Informasi Kakak sudah lengkap dan sudah kami catat. Kakak mau lihat proposal brand apa?';
+    'Terima kasih, Kakak. Semua informasi sudah lengkap dan kami catat. Tim Business Manager kami akan segera memproses data Kakak dan menghubungi kembali secepatnya.';
   const replySeed = leadIsComplete || completedFromStateFallback
     ? completionReplyFallback
     : cleanReply ||

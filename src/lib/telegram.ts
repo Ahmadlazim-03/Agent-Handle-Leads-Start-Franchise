@@ -273,3 +273,29 @@ function formatLeadMessage(lead: LeadData, phoneNumber: string): string {
 
 <b>WA Link:</b> ${waLink}`;
 }
+
+export async function sendTelegramIntentNotification(input: {
+  phoneNumber: string;
+  intentType: 'franchisor' | 'other';
+  userMessage: string;
+}): Promise<boolean> {
+  const leadIdentifier = normalizeLeadIdentifier(input.phoneNumber);
+  const safeLeadIdentifier = escapeHtml(leadIdentifier || '-');
+  const waLink = buildWaLink(leadIdentifier);
+  const safeUserMessage = escapeHtml(input.userMessage || '-');
+
+  const intentLabel =
+    input.intentType === 'franchisor'
+      ? '🏢 Keperluan: Menjadi Franchisor'
+      : '📋 Keperluan: Lainnya';
+
+  const message = `<b>${intentLabel}</b>
+
+<b>Lead ID:</b> ${safeLeadIdentifier}
+<b>Pesan User:</b> ${safeUserMessage}
+<b>WA Link:</b> ${waLink}
+
+Bot sudah berhenti merespons untuk lead ini.`;
+
+  return sendTelegramHtmlMessage(message);
+}
