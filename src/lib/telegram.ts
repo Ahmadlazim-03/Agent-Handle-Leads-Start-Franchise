@@ -1,23 +1,27 @@
 import { LeadData } from './openai';
 import { getRuntimeEnvValues } from './runtime-env';
+import { buildTelegramChatCandidates, parseTelegramChatIds } from './telegram-chat-id';
 
-async function getTelegramConfig(): Promise<{ botToken: string; chatId: string } | null> {
+async function getTelegramConfig(): Promise<{
+  botToken: string;
+  chatIds: string[];
+} | null> {
   const runtimeValues = await getRuntimeEnvValues([
     'TELEGRAM_BOT_TOKEN',
     'TELEGRAM_CHAT_ID',
   ]);
 
   const botToken = runtimeValues.TELEGRAM_BOT_TOKEN.trim();
-  const chatId = runtimeValues.TELEGRAM_CHAT_ID.trim();
+  const chatIds = parseTelegramChatIds(runtimeValues.TELEGRAM_CHAT_ID);
 
-  if (!botToken || !chatId) {
+  if (!botToken || chatIds.length === 0) {
     console.error(
-      'Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in runtime config/dashboard or environment variables.'
+      'Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID (supports comma/newline-separated values) in runtime config/dashboard or environment variables.'
     );
     return null;
   }
 
-  return { botToken, chatId };
+  return { botToken, chatIds };
 }
 
 function escapeHtml(value: string): string {
@@ -62,55 +66,80 @@ async function sendTelegramHtmlMessage(message: string): Promise<boolean> {
   }
 
   const telegramApiUrl = `https://api.telegram.org/bot${config.botToken}`;
+  let deliveredCount = 0;
+  const failedTargets: string[] = [];
 
   try {
-    const chatCandidates = [config.chatId];
-    if (config.chatId.startsWith('-') && !config.chatId.startsWith('-100')) {
-      chatCandidates.push(`-100${config.chatId.slice(1)}`);
-    }
+    for (const configuredChatId of config.chatIds) {
+      const chatCandidates = buildTelegramChatCandidates(configuredChatId);
+      let targetDelivered = false;
+      let targetError = '';
 
-    for (const chatId of chatCandidates) {
-      const response = await fetch(`${telegramApiUrl}/sendMessage`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: message,
-          parse_mode: 'HTML',
-          disable_web_page_preview: true,
-        }),
-      });
+      for (let index = 0; index < chatCandidates.length; index += 1) {
+        const chatId = chatCandidates[index];
+        const response = await fetch(`${telegramApiUrl}/sendMessage`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: message,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+          }),
+        });
 
-      if (response.ok) {
-        if (chatId !== config.chatId) {
-          console.warn(
-            `Telegram notification delivered using fallback chat_id=${chatId}. Consider updating TELEGRAM_CHAT_ID.`
-          );
+        if (response.ok) {
+          if (chatId !== configuredChatId) {
+            console.warn(
+              `Telegram notification delivered using fallback chat_id=${chatId}. Consider updating TELEGRAM_CHAT_ID.`
+            );
+          }
+
+          deliveredCount += 1;
+          targetDelivered = true;
+          break;
         }
 
-        console.log('Telegram notification sent successfully');
-        return true;
+        const errorBody = await response.text().catch(() => '');
+        const isChatNotFound = /chat not found/i.test(errorBody);
+        const hasMoreCandidates = index < chatCandidates.length - 1;
+
+        if (isChatNotFound && hasMoreCandidates) {
+          console.warn(`Telegram chat_id=${chatId} not found, trying fallback...`);
+          continue;
+        }
+
+        targetError = `${response.status} ${response.statusText} ${errorBody.slice(0, 200)}`;
+        break;
       }
 
-      const errorBody = await response.text().catch(() => '');
-      const isChatNotFound = /chat not found/i.test(errorBody);
-
-      if (isChatNotFound && chatId !== chatCandidates[chatCandidates.length - 1]) {
-        console.warn(
-          `Telegram chat_id=${chatId} not found, trying next candidate...`
+      if (!targetDelivered) {
+        failedTargets.push(
+          targetError
+            ? `${configuredChatId} (${targetError})`
+            : configuredChatId
         );
-        continue;
       }
+    }
 
+    if (deliveredCount === 0) {
+      console.error('Failed to send Telegram notification to all configured chat IDs.');
+      return false;
+    }
+
+    if (failedTargets.length > 0) {
       console.error(
-        `Failed to send Telegram notification: status=${response.status} statusText=${response.statusText} body=${errorBody.slice(0, 500)}`
+        `Telegram notification partially sent (${deliveredCount}/${config.chatIds.length}). Failed targets: ${failedTargets.join(', ')}`
       );
       return false;
     }
 
-    return false;
+    console.log(
+      `Telegram notification sent successfully to ${deliveredCount} chat ID(s).`
+    );
+    return true;
   } catch (error) {
     console.error('Error sending Telegram notification:', error);
     return false;

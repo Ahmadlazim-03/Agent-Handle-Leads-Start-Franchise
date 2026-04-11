@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createUnauthorizedResponse, isAdminAuthenticated } from '@/lib/admin-auth-guard';
 import { getRedisClient } from '@/lib/redis';
 import { getRuntimeEnvValues } from '@/lib/runtime-env';
+import { buildTelegramChatCandidates, parseTelegramChatIds } from '@/lib/telegram-chat-id';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -273,15 +274,16 @@ async function checkTelegramStatus(): Promise<IntegrationStatus> {
     'TELEGRAM_CHAT_ID',
   ]);
   const botToken = runtimeValues.TELEGRAM_BOT_TOKEN.trim();
-  const chatId = runtimeValues.TELEGRAM_CHAT_ID.trim();
+  const chatIds = parseTelegramChatIds(runtimeValues.TELEGRAM_CHAT_ID);
 
-  if (!botToken || !chatId) {
+  if (!botToken || chatIds.length === 0) {
     return {
       key: 'telegram',
       label: 'Telegram',
       connected: false,
       configured: false,
-      message: 'TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID belum diatur.',
+      message:
+        'TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID belum diatur (pisahkan banyak ID dengan koma/baris baru).',
       latencyMs: null,
       checkedAt,
     };
@@ -305,45 +307,68 @@ async function checkTelegramStatus(): Promise<IntegrationStatus> {
       };
     }
 
-    const chatCandidates = [chatId];
-    if (chatId.startsWith('-') && !chatId.startsWith('-100')) {
-      chatCandidates.push(`-100${chatId.slice(1)}`);
+    const successfulTargets: string[] = [];
+    const failedTargets: string[] = [];
+
+    for (const configuredChatId of chatIds) {
+      const chatCandidates = buildTelegramChatCandidates(configuredChatId);
+      let targetResolved = false;
+      let targetError = '';
+
+      for (let index = 0; index < chatCandidates.length; index += 1) {
+        const candidate = chatCandidates[index];
+        const chatUrl = new URL(`${baseUrl}/getChat`);
+        chatUrl.searchParams.set('chat_id', candidate);
+
+        const chatResponse = await fetchWithTimeout(chatUrl.toString(), { method: 'GET' }, 7000);
+        const chatBody = await chatResponse.text().catch(() => '');
+
+        if (chatResponse.ok) {
+          successfulTargets.push(candidate);
+          targetResolved = true;
+          break;
+        }
+
+        const isChatNotFound = /chat not found/i.test(chatBody);
+        const hasMoreCandidates = index < chatCandidates.length - 1;
+        if (isChatNotFound && hasMoreCandidates) {
+          continue;
+        }
+
+        targetError = `${chatResponse.status} ${chatResponse.statusText} ${truncateText(chatBody)}`;
+        break;
+      }
+
+      if (!targetResolved) {
+        failedTargets.push(
+          targetError
+            ? `${configuredChatId} (${targetError})`
+            : configuredChatId
+        );
+      }
     }
 
-    for (const candidate of chatCandidates) {
-      const chatUrl = new URL(`${baseUrl}/getChat`);
-      chatUrl.searchParams.set('chat_id', candidate);
-
-      const chatResponse = await fetchWithTimeout(chatUrl.toString(), { method: 'GET' }, 7000);
-      const chatBody = await chatResponse.text().catch(() => '');
-
-      if (chatResponse.ok) {
-        return {
-          key: 'telegram',
-          label: 'Telegram',
-          connected: true,
-          configured: true,
-          message:
-            candidate === chatId
-              ? 'Bot token valid dan chat ID dapat diakses.'
-              : `Bot token valid dan chat ID fallback ${candidate} dapat diakses.`,
-          latencyMs: Date.now() - startedAt,
-          checkedAt,
-        };
-      }
-
-      const isChatNotFound = /chat not found/i.test(chatBody);
-      const hasMoreCandidates = candidate !== chatCandidates[chatCandidates.length - 1];
-      if (isChatNotFound && hasMoreCandidates) {
-        continue;
-      }
-
+    if (successfulTargets.length === 0) {
       return {
         key: 'telegram',
         label: 'Telegram',
         connected: false,
         configured: true,
-        message: `Telegram getChat gagal: ${chatResponse.status} ${chatResponse.statusText} ${truncateText(chatBody)}`,
+        message: `Telegram getChat gagal untuk semua chat ID: ${truncateText(failedTargets.join(' | '))}`,
+        latencyMs: Date.now() - startedAt,
+        checkedAt,
+      };
+    }
+
+    if (failedTargets.length > 0) {
+      return {
+        key: 'telegram',
+        label: 'Telegram',
+        connected: true,
+        configured: true,
+        message: truncateText(
+          `Bot token valid. ${successfulTargets.length}/${chatIds.length} chat ID dapat diakses. Gagal: ${failedTargets.join(' | ')}`
+        ),
         latencyMs: Date.now() - startedAt,
         checkedAt,
       };
@@ -352,9 +377,9 @@ async function checkTelegramStatus(): Promise<IntegrationStatus> {
     return {
       key: 'telegram',
       label: 'Telegram',
-      connected: false,
+      connected: true,
       configured: true,
-      message: 'Telegram tidak menemukan chat ID tujuan.',
+      message: `Bot token valid dan ${successfulTargets.length} chat ID dapat diakses.`,
       latencyMs: Date.now() - startedAt,
       checkedAt,
     };

@@ -129,8 +129,9 @@ const RUNTIME_ENV_DEFINITIONS: RuntimeEnvDefinition[] = [
   },
   {
     key: 'TELEGRAM_CHAT_ID',
-    label: 'Telegram Chat ID',
-    description: 'Chat ID tujuan notifikasi Telegram.',
+    label: 'Telegram Chat ID(s)',
+    description:
+      'Satu atau beberapa chat ID tujuan notifikasi Telegram (pisahkan dengan koma atau baris baru).',
     defaultValue: '',
     isSecret: false,
     isMultiline: false,
