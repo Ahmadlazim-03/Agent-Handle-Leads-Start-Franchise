@@ -1,6 +1,7 @@
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
 import { LeadData } from './openai';
+import { getRuntimeEnvValues } from './runtime-env';
 
 const DEFAULT_GOOGLE_SHEET_SOURCE =
   'https://docs.google.com/spreadsheets/d/1kn23ILLqav6yn-FOSqsHxPIJNAeWKth-Jhk_jsJu6b0/edit?gid=2093370014#gid=2093370014';
@@ -27,8 +28,17 @@ function extractSpreadsheetId(rawValue: string): string {
   return trimmed;
 }
 
-function normalizePhoneNumber(phoneNumber: string): string {
-  return phoneNumber.replace(/\D/g, '');
+function normalizeLeadIdentifier(identifier: string): string {
+  const trimmed = identifier.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (/@lid$/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  return trimmed.replace(/\D/g, '');
 }
 
 function pickValueForHeader(
@@ -44,12 +54,15 @@ function pickValueForHeader(
     normalizedHeader === 'nomor wa' ||
     normalizedHeader === 'no wa' ||
     normalizedHeader === 'no_wa' ||
+    normalizedHeader === 'lead id' ||
+    normalizedHeader === 'lead_id' ||
+    normalizedHeader === 'lid' ||
     normalizedHeader === 'phone' ||
     normalizedHeader === 'phone number' ||
     normalizedHeader === 'phone_number' ||
     normalizedHeader === 'whatsapp'
   ) {
-    return normalizePhoneNumber(phoneNumber);
+    return normalizeLeadIdentifier(phoneNumber);
   }
 
   if (
@@ -101,14 +114,17 @@ function pickValueForHeader(
   return null;
 }
 
-const GOOGLE_SHEET_SOURCE =
-  process.env.GOOGLE_SHEET_ID?.trim() || DEFAULT_GOOGLE_SHEET_SOURCE;
-const GOOGLE_SHEET_ID = extractSpreadsheetId(GOOGLE_SHEET_SOURCE);
-const GOOGLE_SHEET_NAME =
-  process.env.GOOGLE_SHEET_NAME?.trim() || DEFAULT_GOOGLE_SHEET_NAME;
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY?.trim() || '';
+type SheetsRuntimeConfig = {
+  sheetId: string;
+  sheetName: string;
+  googleServiceAccountEmail: string;
+  googlePrivateKey: string;
+};
 
-let cachedDoc: GoogleSpreadsheet | null = null;
+let cachedDocEntry: {
+  cacheKey: string;
+  doc: GoogleSpreadsheet;
+} | null = null;
 
 function stripWrappingQuotes(value: string): string {
   if (
@@ -154,14 +170,38 @@ function buildLeadRowForHeaders(
   return { rowObject, rowValues, hasData };
 }
 
-function hasUsableServiceAccountCredentials(): boolean {
-  const email = stripWrappingQuotes(
-    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim() || ''
+async function getSheetsRuntimeConfig(): Promise<SheetsRuntimeConfig> {
+  const runtimeValues = await getRuntimeEnvValues([
+    'GOOGLE_SHEET_ID',
+    'GOOGLE_SHEET_NAME',
+    'GOOGLE_SERVICE_ACCOUNT_EMAIL',
+    'GOOGLE_PRIVATE_KEY',
+  ]);
+
+  const sheetSource =
+    runtimeValues.GOOGLE_SHEET_ID.trim() || DEFAULT_GOOGLE_SHEET_SOURCE;
+  const sheetId = extractSpreadsheetId(sheetSource);
+  const sheetName = runtimeValues.GOOGLE_SHEET_NAME.trim() || DEFAULT_GOOGLE_SHEET_NAME;
+  const googleServiceAccountEmail = stripWrappingQuotes(
+    runtimeValues.GOOGLE_SERVICE_ACCOUNT_EMAIL.trim()
   );
-  const rawPrivateKey = stripWrappingQuotes(
-    process.env.GOOGLE_PRIVATE_KEY?.trim() || ''
-  );
-  const privateKey = rawPrivateKey.replace(/\\n/g, '\n').trim();
+  const googlePrivateKey = stripWrappingQuotes(
+    runtimeValues.GOOGLE_PRIVATE_KEY.trim()
+  )
+    .replace(/\\n/g, '\n')
+    .trim();
+
+  return {
+    sheetId,
+    sheetName,
+    googleServiceAccountEmail,
+    googlePrivateKey,
+  };
+}
+
+function hasUsableServiceAccountCredentials(config: SheetsRuntimeConfig): boolean {
+  const email = config.googleServiceAccountEmail;
+  const privateKey = config.googlePrivateKey;
 
   if (!email || !privateKey) {
     return false;
@@ -174,14 +214,12 @@ function hasUsableServiceAccountCredentials(): boolean {
   return privateKey.includes('BEGIN PRIVATE KEY');
 }
 
-function getGoogleCredentials(): { email: string; privateKey: string } {
-  const email = stripWrappingQuotes(
-    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim() || ''
-  );
-  const rawPrivateKey = stripWrappingQuotes(
-    process.env.GOOGLE_PRIVATE_KEY?.trim() || ''
-  );
-  const privateKey = rawPrivateKey.replace(/\\n/g, '\n').trim();
+function getGoogleCredentials(config: SheetsRuntimeConfig): {
+  email: string;
+  privateKey: string;
+} {
+  const email = config.googleServiceAccountEmail;
+  const privateKey = config.googlePrivateKey;
 
   if (!email || !privateKey) {
     throw new Error(
@@ -207,12 +245,14 @@ function getGoogleCredentials(): { email: string; privateKey: string } {
   return { email, privateKey };
 }
 
-function getSpreadsheetClient(): GoogleSpreadsheet {
-  if (cachedDoc) {
-    return cachedDoc;
+function getSpreadsheetClient(config: SheetsRuntimeConfig): GoogleSpreadsheet {
+  const cacheKey = `${config.sheetId}::${config.googleServiceAccountEmail}::${config.sheetName}`;
+
+  if (cachedDocEntry && cachedDocEntry.cacheKey === cacheKey) {
+    return cachedDocEntry.doc;
   }
 
-  const { email, privateKey } = getGoogleCredentials();
+  const { email, privateKey } = getGoogleCredentials(config);
 
   const serviceAccountAuth = new JWT({
     email,
@@ -220,8 +260,12 @@ function getSpreadsheetClient(): GoogleSpreadsheet {
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
-  cachedDoc = new GoogleSpreadsheet(GOOGLE_SHEET_ID, serviceAccountAuth);
-  return cachedDoc;
+  const doc = new GoogleSpreadsheet(config.sheetId, serviceAccountAuth);
+  cachedDocEntry = {
+    cacheKey,
+    doc,
+  };
+  return doc;
 }
 
 export async function appendLeadToSheet(
@@ -229,28 +273,24 @@ export async function appendLeadToSheet(
   phoneNumber = ''
 ): Promise<boolean> {
   try {
-    if (GOOGLE_API_KEY) {
-      console.warn(
-        'GOOGLE_API_KEY is configured, but Google Sheets append requires OAuth/service account credentials. API key is ignored for write operations.'
-      );
-    }
+    const config = await getSheetsRuntimeConfig();
 
-    if (!hasUsableServiceAccountCredentials()) {
+    if (!hasUsableServiceAccountCredentials(config)) {
       console.error(
-        'No usable Google Sheets write credentials. Set valid GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY in .env.local. GOOGLE_API_KEY alone cannot append rows.'
+        'No usable Google Sheets write credentials. Set valid GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY in runtime config/dashboard or .env.local.'
       );
       return false;
     }
 
-    const doc = getSpreadsheetClient();
+    const doc = getSpreadsheetClient(config);
     await doc.loadInfo();
-    const sheet = GOOGLE_SHEET_NAME
-      ? doc.sheetsByTitle[GOOGLE_SHEET_NAME]
+    const sheet = config.sheetName
+      ? doc.sheetsByTitle[config.sheetName]
       : doc.sheetsByIndex[0];
 
     if (!sheet) {
       throw new Error(
-        `Google Sheet tab not found: ${GOOGLE_SHEET_NAME || '(first sheet)'}`
+        `Google Sheet tab not found: ${config.sheetName || '(first sheet)'}`
       );
     }
 

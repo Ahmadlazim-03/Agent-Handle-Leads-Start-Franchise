@@ -238,6 +238,45 @@ function normalizeLeadPayload(payload: PartialLeadPayload): LeadData {
   };
 }
 
+function extractLabeledValue(content: string, labelPattern: string): string {
+  const pattern = new RegExp(
+    `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=\\b(?:sumber\\s*info|biodata|bidang\\s*usaha|budget|rencana\\s*mulai)\\b\\s*:|$)`,
+    'i'
+  );
+
+  const match = content.match(pattern);
+  if (!match?.[1]) {
+    return '';
+  }
+
+  return match[1]
+    .replace(/^[-:|;,\s]+/, '')
+    .replace(/[-:|;,\s]+$/, '')
+    .trim();
+}
+
+function parseLeadFromLabeledText(content: string): LeadData | null {
+  const normalizedContent = content.replace(/\r/g, ' ').replace(/\n+/g, ' ').trim();
+  if (!normalizedContent) {
+    return null;
+  }
+
+  const rawPayload: PartialLeadPayload = {
+    sumberInfo: extractLabeledValue(normalizedContent, 'sumber\\s*info|sumber'),
+    biodata: extractLabeledValue(normalizedContent, 'biodata|nama\\s*&\\s*kota|nama\\s+dan\\s+kota'),
+    bidangUsaha: extractLabeledValue(normalizedContent, 'bidang\\s*usaha|usaha'),
+    budget: extractLabeledValue(normalizedContent, 'budget|anggaran'),
+    rencanaMulai: extractLabeledValue(normalizedContent, 'rencana\\s*mulai|timeline'),
+  };
+
+  const normalizedPayload = normalizeLeadPayload(rawPayload);
+  if (!isLeadComplete(normalizedPayload)) {
+    return null;
+  }
+
+  return normalizedPayload;
+}
+
 export function stripLeadPayload(content: string): string {
   const markerIndex = content.indexOf(LEAD_COMPLETE_TAG);
   if (markerIndex === -1) {
@@ -250,7 +289,7 @@ export function stripLeadPayload(content: string): string {
 export function parseLeadFromMessage(content: string): LeadData | null {
   const markerIndex = content.indexOf(LEAD_COMPLETE_TAG);
   if (markerIndex === -1) {
-    return null;
+    return parseLeadFromLabeledText(content);
   }
 
   const taggedPayload = content.slice(markerIndex + LEAD_COMPLETE_TAG.length).trim();

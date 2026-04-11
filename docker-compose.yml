@@ -1,0 +1,17 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wa-lead-agent:latest
+    container_name: wa-lead-agent
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      ADMIN_AUTH_COOKIE_SECURE: ${ADMIN_AUTH_COOKIE_SECURE:-false}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped

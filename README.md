@@ -165,6 +165,126 @@ npm run build
 npm start
 ```
 
+## Docker Deployment
+
+Project ini sudah disiapkan untuk deploy Docker menggunakan Next.js standalone output.
+
+### A. Build & Run dengan Docker CLI
+
+1. Build image:
+
+```bash
+docker build -t wa-lead-agent:latest .
+```
+
+2. Jalankan container:
+
+```bash
+docker run --name wa-lead-agent -d -p 3000:3000 --env-file .env.local -e ADMIN_AUTH_COOKIE_SECURE=false wa-lead-agent:latest
+```
+
+3. Cek log:
+
+```bash
+docker logs -f wa-lead-agent
+```
+
+4. Stop/hapus container:
+
+```bash
+docker stop wa-lead-agent
+docker rm wa-lead-agent
+```
+
+### B. Build & Run dengan Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+Stop service:
+
+```bash
+docker compose down
+```
+
+Catatan auth cookie:
+
+- Local HTTP (tanpa TLS): gunakan `ADMIN_AUTH_COOKIE_SECURE=false`.
+- Production HTTPS (disarankan): set `ADMIN_AUTH_COOKIE_SECURE=true`.
+
+### C. Smoke Test Container
+
+Setelah container running, cek endpoint berikut:
+
+```bash
+curl -I http://localhost:3000/login
+curl -I http://localhost:3000/dashboard
+curl -i http://localhost:3000/api/dashboard/prompt
+```
+
+Ekspektasi minimum:
+
+- `/login` merespons `200`.
+- `/dashboard` tanpa login di-redirect ke `/login`.
+- `/api/dashboard/prompt` tanpa login merespons `401 Unauthorized`.
+
+## Deploy di Coolify
+
+Project ini sudah siap deploy di Coolify via Dockerfile.
+
+### 1. Buat Resource Aplikasi
+
+1. Masuk ke Coolify -> `New Resource` -> `Application`.
+2. Pilih source repository GitHub repo ini.
+3. Pilih branch deploy (contoh: `main`).
+4. Build Pack/Type: `Dockerfile`.
+5. Dockerfile path: `./Dockerfile`.
+6. Exposed Port: `3000`.
+
+### 2. Domain dan HTTPS
+
+1. Tambahkan domain di tab `Domains`.
+2. Aktifkan SSL/Let's Encrypt dari Coolify.
+
+### 3. Environment Variables (Wajib)
+
+Tambahkan semua variabel runtime dari `.env.local` ke Coolify Environment Variables, minimal:
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `WAHA_URL`
+- `WAHA_SESSION`
+- `WAHA_API_KEY`
+- `REDIS_URL`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `GOOGLE_SERVICE_ACCOUNT_EMAIL`
+- `GOOGLE_PRIVATE_KEY` (aktifkan mode multiline di Coolify)
+- `GOOGLE_SHEET_ID`
+- `GOOGLE_SHEET_NAME`
+- `ADMIN_AUTH_COOKIE_SECURE=true`
+
+Catatan:
+
+- Untuk nilai mengandung karakter `$`, aktifkan opsi `Literal` di Coolify agar tidak diinterpolasi.
+- Untuk private key, gunakan `Multiline` variable di Coolify.
+
+### 4. Health Check
+
+Gunakan endpoint berikut sebagai health check di Coolify:
+
+- `/api/health`
+
+### 5. Deploy dan Verifikasi
+
+Setelah deploy sukses, cek:
+
+- `/api/health` -> harus `200`.
+- `/login` -> harus `200`.
+- `/dashboard` tanpa login -> redirect ke `/login`.
+- Login admin -> dashboard dapat diakses.
+
 ## Struktur Folder
 
 ```

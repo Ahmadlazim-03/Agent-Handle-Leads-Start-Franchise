@@ -1,12 +1,18 @@
 import { LeadData } from './openai';
+import { getRuntimeEnvValues } from './runtime-env';
 
-function getTelegramConfig(): { botToken: string; chatId: string } | null {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim() || '';
-  const chatId = process.env.TELEGRAM_CHAT_ID?.trim() || '';
+async function getTelegramConfig(): Promise<{ botToken: string; chatId: string } | null> {
+  const runtimeValues = await getRuntimeEnvValues([
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_CHAT_ID',
+  ]);
+
+  const botToken = runtimeValues.TELEGRAM_BOT_TOKEN.trim();
+  const chatId = runtimeValues.TELEGRAM_CHAT_ID.trim();
 
   if (!botToken || !chatId) {
     console.error(
-      'Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in environment variables.'
+      'Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in runtime config/dashboard or environment variables.'
     );
     return null;
   }
@@ -23,12 +29,34 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function normalizePhoneForLink(phoneNumber: string): string {
-  return phoneNumber.replace(/\D/g, '');
+function normalizeLeadIdentifier(phoneNumber: string): string {
+  const trimmed = phoneNumber.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (/@lid$/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  return trimmed.replace(/\D/g, '');
+}
+
+function buildWaLink(leadIdentifier: string): string {
+  if (!leadIdentifier || /@lid$/i.test(leadIdentifier)) {
+    return '-';
+  }
+
+  const phoneDigits = leadIdentifier.replace(/\D/g, '');
+  if (!phoneDigits) {
+    return '-';
+  }
+
+  return `https://wa.me/${phoneDigits}`;
 }
 
 async function sendTelegramHtmlMessage(message: string): Promise<boolean> {
-  const config = getTelegramConfig();
+  const config = await getTelegramConfig();
   if (!config) {
     return false;
   }
@@ -111,10 +139,13 @@ function formatDealMeetingMessage(
   const safeRencanaMulai = escapeHtml(safeCollectedValue(collectedData, 'rencanaMulai'));
   const safeMeetingSchedule = escapeHtml(meetingSchedule || '-');
   const safeLatestUserMessage = escapeHtml(latestUserMessage || '-');
-  const waNumber = normalizePhoneForLink(phoneNumber);
-  const waLink = waNumber ? `https://wa.me/${waNumber}` : '-';
+  const leadIdentifier = normalizeLeadIdentifier(phoneNumber);
+  const safeLeadIdentifier = escapeHtml(leadIdentifier || '-');
+  const waLink = buildWaLink(leadIdentifier);
 
   return `<b>Lead Deal + Meeting Confirmed</b> ✅
+
+<b>Lead ID:</b> ${safeLeadIdentifier}
 
 <b>Biodata:</b> ${safeBiodata}
 <b>Usaha:</b> ${safeBidangUsaha}
@@ -157,10 +188,13 @@ function formatLeadMessage(lead: LeadData, phoneNumber: string): string {
   const safeSumberInfo = escapeHtml(lead.sumberInfo);
   const safeBudget = escapeHtml(lead.budget);
   const safeRencanaMulai = escapeHtml(lead.rencanaMulai);
-  const waNumber = normalizePhoneForLink(phoneNumber);
-  const waLink = waNumber ? `https://wa.me/${waNumber}` : '-';
+  const leadIdentifier = normalizeLeadIdentifier(phoneNumber);
+  const safeLeadIdentifier = escapeHtml(leadIdentifier || '-');
+  const waLink = buildWaLink(leadIdentifier);
 
   return `<b>New Lead Alert!</b> 🔥
+
+<b>Lead ID:</b> ${safeLeadIdentifier}
 
 <b>Biodata:</b> ${safeBiodata}
 <b>Usaha:</b> ${safeBidangUsaha}

@@ -19,10 +19,10 @@ export default function Home() {
 
         <div className="mt-8 flex flex-wrap gap-3">
           <Link
-            href="/dashboard"
+            href="/login"
             className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-700"
           >
-            Buka Dashboard
+            Login Dashboard
           </Link>
           <a
             href="/api/dashboard/numbers"

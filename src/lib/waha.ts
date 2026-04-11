@@ -3,20 +3,29 @@ import {
   isKnownLeadNumber,
   saveKnownLeadNumber,
 } from './lead-numbers';
+import { getRuntimeEnvValues } from './runtime-env';
 
-const WAHA_URL = process.env.WAHA_URL || 'http://localhost:3000';
-const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
-const WAHA_API_KEY = process.env.WAHA_API_KEY?.trim();
-const ALLOW_EXISTING_LEADS_FOR_TEST =
-  process.env.ALLOW_EXISTING_LEADS_FOR_TEST?.trim().toLowerCase() === 'true';
-const NEW_LEAD_MAX_USER_MESSAGES = parseNewLeadMaxUserMessages(
-  process.env.NEW_LEAD_MAX_USER_MESSAGES
-);
-const WAHA_NEW_LEAD_LABEL_NAME =
-  process.env.WAHA_NEW_LEAD_LABEL_NAME?.trim() || 'Lead Baru';
-const WAHA_NEW_LEAD_LABEL_COLOR = parseLabelColor(
-  process.env.WAHA_NEW_LEAD_LABEL_COLOR
-);
+const DEFAULT_WAHA_URL = 'http://localhost:3000';
+const DEFAULT_WAHA_SESSION = 'default';
+const DEFAULT_WAHA_NEW_LEAD_LABEL_NAME = 'Lead Baru';
+const DEFAULT_WAHA_NEW_LEAD_LABEL_COLOR = 1;
+const DEFAULT_NEW_LEAD_MAX_USER_MESSAGES = 1;
+const WAHA_RUNTIME_CONFIG_CACHE_TTL_MS = 1500;
+
+type WahaRuntimeConfig = {
+  wahaUrl: string;
+  wahaSession: string;
+  wahaApiKey: string;
+  allowExistingLeadsForTest: boolean;
+  newLeadMaxUserMessages: number;
+  wahaNewLeadLabelName: string;
+  wahaNewLeadLabelColor: number;
+};
+
+let cachedWahaRuntimeConfig: {
+  loadedAt: number;
+  value: WahaRuntimeConfig;
+} | null = null;
 
 interface WAHAMessage {
   chatId: string;
@@ -78,6 +87,83 @@ function parseLabelColor(value?: string): number {
   return parsed;
 }
 
+function readWahaRuntimeConfig(): WahaRuntimeConfig {
+  if (cachedWahaRuntimeConfig) {
+    return cachedWahaRuntimeConfig.value;
+  }
+
+  const fallbackUrl = process.env.WAHA_URL?.trim() || DEFAULT_WAHA_URL;
+  const fallbackSession = process.env.WAHA_SESSION?.trim() || DEFAULT_WAHA_SESSION;
+  const fallbackApiKey = process.env.WAHA_API_KEY?.trim() || '';
+  const fallbackAllowExistingLeadsForTest =
+    process.env.ALLOW_EXISTING_LEADS_FOR_TEST?.trim().toLowerCase() === 'true';
+  const fallbackNewLeadMaxUserMessages = parseNewLeadMaxUserMessages(
+    process.env.NEW_LEAD_MAX_USER_MESSAGES
+  );
+  const fallbackWahaNewLeadLabelName =
+    process.env.WAHA_NEW_LEAD_LABEL_NAME?.trim() || DEFAULT_WAHA_NEW_LEAD_LABEL_NAME;
+  const fallbackWahaNewLeadLabelColor = parseLabelColor(
+    process.env.WAHA_NEW_LEAD_LABEL_COLOR
+  );
+
+  return {
+    wahaUrl: fallbackUrl,
+    wahaSession: fallbackSession,
+    wahaApiKey: fallbackApiKey,
+    allowExistingLeadsForTest: fallbackAllowExistingLeadsForTest,
+    newLeadMaxUserMessages:
+      fallbackNewLeadMaxUserMessages || DEFAULT_NEW_LEAD_MAX_USER_MESSAGES,
+    wahaNewLeadLabelName: fallbackWahaNewLeadLabelName,
+    wahaNewLeadLabelColor:
+      fallbackWahaNewLeadLabelColor || DEFAULT_WAHA_NEW_LEAD_LABEL_COLOR,
+  };
+}
+
+async function loadWahaRuntimeConfig(force = false): Promise<WahaRuntimeConfig> {
+  const now = Date.now();
+  if (
+    !force &&
+    cachedWahaRuntimeConfig &&
+    now - cachedWahaRuntimeConfig.loadedAt < WAHA_RUNTIME_CONFIG_CACHE_TTL_MS
+  ) {
+    return cachedWahaRuntimeConfig.value;
+  }
+
+  const runtimeValues = await getRuntimeEnvValues([
+    'WAHA_URL',
+    'WAHA_SESSION',
+    'WAHA_API_KEY',
+    'ALLOW_EXISTING_LEADS_FOR_TEST',
+    'NEW_LEAD_MAX_USER_MESSAGES',
+    'WAHA_NEW_LEAD_LABEL_NAME',
+    'WAHA_NEW_LEAD_LABEL_COLOR',
+  ]);
+
+  const resolvedConfig: WahaRuntimeConfig = {
+    wahaUrl: runtimeValues.WAHA_URL.trim() || DEFAULT_WAHA_URL,
+    wahaSession: runtimeValues.WAHA_SESSION.trim() || DEFAULT_WAHA_SESSION,
+    wahaApiKey: runtimeValues.WAHA_API_KEY.trim(),
+    allowExistingLeadsForTest:
+      runtimeValues.ALLOW_EXISTING_LEADS_FOR_TEST.trim().toLowerCase() === 'true',
+    newLeadMaxUserMessages:
+      parseNewLeadMaxUserMessages(runtimeValues.NEW_LEAD_MAX_USER_MESSAGES) ||
+      DEFAULT_NEW_LEAD_MAX_USER_MESSAGES,
+    wahaNewLeadLabelName:
+      runtimeValues.WAHA_NEW_LEAD_LABEL_NAME.trim() ||
+      DEFAULT_WAHA_NEW_LEAD_LABEL_NAME,
+    wahaNewLeadLabelColor:
+      parseLabelColor(runtimeValues.WAHA_NEW_LEAD_LABEL_COLOR) ||
+      DEFAULT_WAHA_NEW_LEAD_LABEL_COLOR,
+  };
+
+  cachedWahaRuntimeConfig = {
+    loadedAt: now,
+    value: resolvedConfig,
+  };
+
+  return resolvedConfig;
+}
+
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -100,6 +186,15 @@ function formatChatId(chatId: string): string {
   return `${normalized}@c.us`;
 }
 
+function isGroupOrBroadcastChatId(chatId: string): boolean {
+  const normalized = formatChatId(chatId).toLowerCase();
+  return (
+    normalized.endsWith('@g.us') ||
+    normalized.includes('@broadcast') ||
+    normalized.includes('status@broadcast')
+  );
+}
+
 function normalizePhoneNumber(value: string): string {
   return value.replace(/\D/g, '');
 }
@@ -115,6 +210,12 @@ function getRelatedChatIds(chatId: string): string[] {
     return [...related];
   }
 
+  // Always probe all personal-chat JID variants because WAHA can store
+  // history/labels under different suffixes for the same phone number.
+  related.add(`${phoneNumber}@c.us`);
+  related.add(`${phoneNumber}@s.whatsapp.net`);
+  related.add(`${phoneNumber}@lid`);
+
   if (lower.endsWith('@lid')) {
     related.add(`${phoneNumber}@s.whatsapp.net`);
     related.add(`${phoneNumber}@c.us`);
@@ -128,7 +229,8 @@ function getRelatedChatIds(chatId: string): string[] {
 }
 
 function buildWahaUrl(path: string, params?: Record<string, string>): string {
-  const url = new URL(path, WAHA_URL);
+  const config = readWahaRuntimeConfig();
+  const url = new URL(path, config.wahaUrl);
 
   if (params) {
     for (const [key, value] of Object.entries(params)) {
@@ -140,13 +242,14 @@ function buildWahaUrl(path: string, params?: Record<string, string>): string {
 }
 
 function buildWahaHeaders(): Record<string, string> {
+  const config = readWahaRuntimeConfig();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
 
-  if (WAHA_API_KEY) {
-    headers['X-Api-Key'] = WAHA_API_KEY;
-    headers.Authorization = `Bearer ${WAHA_API_KEY}`;
+  if (config.wahaApiKey) {
+    headers['X-Api-Key'] = config.wahaApiKey;
+    headers.Authorization = `Bearer ${config.wahaApiKey}`;
   }
 
   return headers;
@@ -304,12 +407,65 @@ function normalizeHistoryMessage(raw: unknown, chatId: string): WAHAMessage | nu
   };
 }
 
+function buildHistoryUrls(chatId: string): string[] {
+  const config = readWahaRuntimeConfig();
+  const formattedChatId = formatChatId(chatId);
+  const encodedChatId = encodeURIComponent(formattedChatId);
+
+  return [
+    buildWahaUrl(
+      buildSessionApiPath(`/chats/${encodedChatId}/messages`),
+      { limit: '200' }
+    ),
+    buildWahaUrl('/api/messages', {
+      chatId: formattedChatId,
+      session: config.wahaSession,
+      limit: '200',
+    }),
+    // Legacy fallback for old WAHA deployments.
+    buildWahaUrl('/api/chatting/history', {
+      chatId: formattedChatId,
+      session: config.wahaSession,
+    }),
+  ];
+}
+
+function isOutboundInitiatedConversation(messages: WAHAMessage[]): boolean {
+  const textMessages = messages.filter((message) => message.text.trim().length > 0);
+  if (textMessages.length === 0) {
+    return false;
+  }
+
+  const chronological = [...textMessages].sort(
+    (left, right) => left.timestamp - right.timestamp
+  );
+
+  const firstOutboundIndex = chronological.findIndex((message) => message.fromMe);
+  const firstInboundIndex = chronological.findIndex((message) => !message.fromMe);
+
+  if (firstOutboundIndex === -1) {
+    return false;
+  }
+
+  if (firstInboundIndex === -1) {
+    return true;
+  }
+
+  return firstOutboundIndex < firstInboundIndex;
+}
+
 export async function sendWhatsAppMessage(
   chatId: string,
   message: string
 ): Promise<boolean> {
+  const runtimeConfig = await loadWahaRuntimeConfig();
   const trimmedMessage = message.trim();
   if (!trimmedMessage) {
+    return false;
+  }
+
+  if (isGroupOrBroadcastChatId(chatId)) {
+    console.log(`[WAHA] Skip sendText to group/broadcast chatId=${formatChatId(chatId)}`);
     return false;
   }
 
@@ -320,7 +476,7 @@ export async function sendWhatsAppMessage(
       body: JSON.stringify({
         chatId: formatChatId(chatId),
         text: trimmedMessage,
-        session: WAHA_SESSION,
+        session: runtimeConfig.wahaSession,
       }),
     });
 
@@ -343,8 +499,14 @@ export async function sendWhatsAppFile(
   chatId: string,
   payload: WhatsAppFilePayload
 ): Promise<boolean> {
+  const runtimeConfig = await loadWahaRuntimeConfig();
   const fileUrl = normalizeText(payload.url);
   if (!fileUrl) {
+    return false;
+  }
+
+  if (isGroupOrBroadcastChatId(chatId)) {
+    console.log(`[WAHA] Skip sendFile to group/broadcast chatId=${formatChatId(chatId)}`);
     return false;
   }
 
@@ -364,7 +526,7 @@ export async function sendWhatsAppFile(
           mimetype,
         },
         caption: caption || undefined,
-        session: WAHA_SESSION,
+        session: runtimeConfig.wahaSession,
       }),
     });
 
@@ -386,49 +548,73 @@ export async function sendWhatsAppFile(
 export async function getChatHistory(
   chatId: string
 ): Promise<ChatHistoryResult> {
-  try {
-    const response = await fetch(
-      buildWahaUrl('/api/chatting/history', {
-        chatId: formatChatId(chatId),
-        session: WAHA_SESSION,
-      }),
-      {
-        method: 'GET',
-        headers: buildWahaHeaders(),
+  await loadWahaRuntimeConfig();
+  const candidateChatIds = getRelatedChatIds(chatId);
+  let non404FailureCount = 0;
+
+  for (const candidateChatId of candidateChatIds) {
+    const historyUrls = buildHistoryUrls(candidateChatId);
+
+    for (const historyUrl of historyUrls) {
+      try {
+        const response = await fetch(historyUrl, {
+          method: 'GET',
+          headers: buildWahaHeaders(),
+        });
+
+        if (response.status === 404) {
+          continue;
+        }
+
+        if (!response.ok) {
+          non404FailureCount += 1;
+          const errorBody = await response.text().catch(() => '');
+          console.error(
+            `[Gatekeeper] Failed to get chat history for ${formatChatId(candidateChatId)} via ${historyUrl}: status=${response.status} statusText=${response.statusText} body=${errorBody.slice(0, 300)}`
+          );
+          continue;
+        }
+
+        const payload = (await response.json()) as unknown;
+        const messages = pickHistoryItems(payload)
+          .map((item) => normalizeHistoryMessage(item, candidateChatId))
+          .filter((item): item is WAHAMessage => item !== null);
+
+        if (messages.length === 0) {
+          // Some WAHA endpoints can return 200 with empty arrays for a JID
+          // variant that does not hold actual chat history.
+          continue;
+        }
+
+        return { kind: 'ok', messages };
+      } catch (error) {
+        non404FailureCount += 1;
+        console.error(
+          `[Gatekeeper] Error getting chat history for ${formatChatId(candidateChatId)} via ${historyUrl}:`,
+          error
+        );
       }
-    );
-
-    if (response.status === 404) {
-      console.warn(
-        `[Gatekeeper] WAHA history returned 404 for ${chatId}; treating as no prior conversation.`
-      );
-      return { kind: 'not_found' };
     }
+  }
 
-    if (!response.ok) {
-      console.error(`Failed to get chat history: ${response.statusText}`);
-      return { kind: 'error' };
-    }
-
-    const payload = (await response.json()) as unknown;
-    const messages = pickHistoryItems(payload)
-      .map((item) => normalizeHistoryMessage(item, chatId))
-      .filter((item): item is WAHAMessage => item !== null);
-
-    return { kind: 'ok', messages };
-  } catch (error) {
-    console.error('Error getting chat history:', error);
+  if (non404FailureCount > 0) {
     return { kind: 'error' };
   }
+
+  console.warn(
+    `[Gatekeeper] WAHA history returned 404 for all related IDs of ${chatId}; treating as no prior conversation.`
+  );
+  return { kind: 'not_found' };
 }
 
 export async function getContactInfo(
   chatId: string
 ): Promise<WAHAContact | null> {
+  const runtimeConfig = await loadWahaRuntimeConfig();
   try {
     const response = await fetch(
       buildWahaUrl('/api/contacts', {
-        session: WAHA_SESSION,
+        session: runtimeConfig.wahaSession,
       }),
       {
         method: 'GET',
@@ -468,7 +654,8 @@ export async function getContactInfo(
 }
 
 function buildSessionApiPath(path: string): string {
-  return `/api/${encodeURIComponent(WAHA_SESSION)}${path}`;
+  const config = readWahaRuntimeConfig();
+  return `/api/${encodeURIComponent(config.wahaSession)}${path}`;
 }
 
 async function getSessionLabels(): Promise<WAHALabel[] | null> {
@@ -624,7 +811,8 @@ async function updateLabelsToChat(
 }
 
 export async function applyLeadCompletionLabel(chatId: string): Promise<boolean> {
-  const labelName = WAHA_NEW_LEAD_LABEL_NAME.trim();
+  const runtimeConfig = await loadWahaRuntimeConfig();
+  const labelName = runtimeConfig.wahaNewLeadLabelName.trim();
 
   if (!labelName) {
     console.warn('[WAHA Labels] WAHA_NEW_LEAD_LABEL_NAME is empty, skip label assignment.');
@@ -641,7 +829,10 @@ export async function applyLeadCompletionLabel(chatId: string): Promise<boolean>
     null;
 
   if (!targetLabel) {
-    targetLabel = await createSessionLabel(labelName, WAHA_NEW_LEAD_LABEL_COLOR);
+    targetLabel = await createSessionLabel(
+      labelName,
+      runtimeConfig.wahaNewLeadLabelColor
+    );
     if (!targetLabel) {
       return false;
     }
@@ -685,8 +876,66 @@ export async function applyLeadCompletionLabel(chatId: string): Promise<boolean>
   return updatedAny;
 }
 
-export async function isNewLead(chatId: string): Promise<boolean> {
-  if (ALLOW_EXISTING_LEADS_FOR_TEST) {
+function buildKnownLeadAliasCandidates(
+  chatId: string,
+  identifierAliases: string[]
+): string[] {
+  const candidates = new Set<string>();
+
+  const appendCandidate = (value: string): void => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    candidates.add(trimmed);
+
+    for (const relatedChatId of getRelatedChatIds(trimmed)) {
+      candidates.add(relatedChatId);
+    }
+  };
+
+  appendCandidate(chatId);
+  for (const alias of identifierAliases) {
+    appendCandidate(alias);
+  }
+
+  return [...candidates];
+}
+
+export async function isKnownLeadByAliases(
+  chatId: string,
+  identifierAliases: string[] = []
+): Promise<boolean> {
+  const runtimeConfig = await loadWahaRuntimeConfig();
+
+  if (runtimeConfig.allowExistingLeadsForTest) {
+    return false;
+  }
+
+  const aliasCandidates = buildKnownLeadAliasCandidates(chatId, identifierAliases);
+  for (const aliasCandidate of aliasCandidates) {
+    const alreadyKnownInRedis = await isKnownLeadNumber(aliasCandidate);
+    if (!alreadyKnownInRedis) {
+      continue;
+    }
+
+    console.log(
+      `[Gatekeeper] chatId=${chatId} matched Redis known-leads set via alias=${aliasCandidate}.`
+    );
+    return true;
+  }
+
+  return false;
+}
+
+export async function isNewLead(
+  chatId: string,
+  identifierAliases: string[] = []
+): Promise<boolean> {
+  const runtimeConfig = await loadWahaRuntimeConfig();
+
+  if (runtimeConfig.allowExistingLeadsForTest) {
     console.log(
       `[Gatekeeper] ALLOW_EXISTING_LEADS_FOR_TEST=true, bypassing new-lead check for ${chatId}`
     );
@@ -708,9 +957,8 @@ export async function isNewLead(chatId: string): Promise<boolean> {
     return true;
   }
 
-  const alreadyKnownInRedis = await isKnownLeadNumber(chatId);
+  const alreadyKnownInRedis = await isKnownLeadByAliases(chatId, identifierAliases);
   if (alreadyKnownInRedis) {
-    console.log(`[Gatekeeper] chatId=${chatId} exists in Redis known-leads set.`);
     return false;
   }
 
@@ -727,13 +975,23 @@ export async function isNewLead(chatId: string): Promise<boolean> {
     return false;
   }
 
+  const startedByAgent = isOutboundInitiatedConversation(history.messages);
+  if (startedByAgent) {
+    console.log(
+      `[Gatekeeper] chatId=${chatId} conversation was initiated by outbound message, skipping AI follow-up.`
+    );
+    await saveKnownLeadNumber(chatId);
+    return false;
+  }
+
   const userMessages = history.messages.filter(
     (msg) => !msg.fromMe && msg.text.length > 0
   );
-  const isLeadFresh = userMessages.length <= NEW_LEAD_MAX_USER_MESSAGES;
+  const isLeadFresh =
+    userMessages.length <= runtimeConfig.newLeadMaxUserMessages;
 
   console.log(
-    `[Gatekeeper] chatId=${chatId} userMessages=${userMessages.length} threshold=${NEW_LEAD_MAX_USER_MESSAGES} isNew=${isLeadFresh}`
+    `[Gatekeeper] chatId=${chatId} userMessages=${userMessages.length} threshold=${runtimeConfig.newLeadMaxUserMessages} isNew=${isLeadFresh}`
   );
 
   if (!isLeadFresh) {

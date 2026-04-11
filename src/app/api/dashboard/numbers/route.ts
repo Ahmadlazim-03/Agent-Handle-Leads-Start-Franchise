@@ -8,7 +8,9 @@ import {
   fetchProcessingLeadNumbers,
   fetchNumberStatusOverrides,
   removeKnownLeadNumber,
+  removeProcessingLeadNumber,
   saveIncomingLeadNumbers,
+  saveKnownLeadNumbers,
   saveKnownLeadNumber,
   setNumberStatusOverride,
 } from '@/lib/lead-numbers';
@@ -17,6 +19,8 @@ import {
   resetAllConversations,
   resetConversationByPhoneNumber,
 } from '@/lib/store';
+import { createUnauthorizedResponse, isAdminAuthenticated } from '@/lib/admin-auth-guard';
+import { getRuntimeEnvValues } from '@/lib/runtime-env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -68,17 +72,77 @@ type WahaSetFetchResult = {
   error: string | null;
 };
 
-const WAHA_URL = process.env.WAHA_URL || 'http://localhost:3000';
-const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
-const WAHA_API_KEY = process.env.WAHA_API_KEY?.trim() || '';
-const WAHA_NEW_LEAD_LABEL_NAME =
-  process.env.WAHA_NEW_LEAD_LABEL_NAME?.trim() || 'Lead Baru';
+const DEFAULT_WAHA_URL = 'http://localhost:3000';
+const DEFAULT_WAHA_SESSION = 'default';
+const DEFAULT_WAHA_NEW_LEAD_LABEL_NAME = 'Lead Baru';
+const DASHBOARD_WAHA_CONFIG_CACHE_TTL_MS = 1500;
+
+type DashboardWahaConfig = {
+  wahaUrl: string;
+  wahaSession: string;
+  wahaApiKey: string;
+  wahaNewLeadLabelName: string;
+};
+
+let cachedDashboardWahaConfig: {
+  loadedAt: number;
+  value: DashboardWahaConfig;
+} | null = null;
 
 const MANAGED_STATUSES: ManagedNumberStatus[] = [
   'pernah_chat',
   'proses_bot',
   'selesai_berlabel',
 ];
+
+function readDashboardWahaConfig(): DashboardWahaConfig {
+  if (cachedDashboardWahaConfig) {
+    return cachedDashboardWahaConfig.value;
+  }
+
+  return {
+    wahaUrl: process.env.WAHA_URL?.trim() || DEFAULT_WAHA_URL,
+    wahaSession: process.env.WAHA_SESSION?.trim() || DEFAULT_WAHA_SESSION,
+    wahaApiKey: process.env.WAHA_API_KEY?.trim() || '',
+    wahaNewLeadLabelName:
+      process.env.WAHA_NEW_LEAD_LABEL_NAME?.trim() ||
+      DEFAULT_WAHA_NEW_LEAD_LABEL_NAME,
+  };
+}
+
+async function loadDashboardWahaConfig(force = false): Promise<DashboardWahaConfig> {
+  const now = Date.now();
+  if (
+    !force &&
+    cachedDashboardWahaConfig &&
+    now - cachedDashboardWahaConfig.loadedAt < DASHBOARD_WAHA_CONFIG_CACHE_TTL_MS
+  ) {
+    return cachedDashboardWahaConfig.value;
+  }
+
+  const runtimeValues = await getRuntimeEnvValues([
+    'WAHA_URL',
+    'WAHA_SESSION',
+    'WAHA_API_KEY',
+    'WAHA_NEW_LEAD_LABEL_NAME',
+  ]);
+
+  const config: DashboardWahaConfig = {
+    wahaUrl: runtimeValues.WAHA_URL.trim() || DEFAULT_WAHA_URL,
+    wahaSession: runtimeValues.WAHA_SESSION.trim() || DEFAULT_WAHA_SESSION,
+    wahaApiKey: runtimeValues.WAHA_API_KEY.trim(),
+    wahaNewLeadLabelName:
+      runtimeValues.WAHA_NEW_LEAD_LABEL_NAME.trim() ||
+      DEFAULT_WAHA_NEW_LEAD_LABEL_NAME,
+  };
+
+  cachedDashboardWahaConfig = {
+    loadedAt: now,
+    value: config,
+  };
+
+  return config;
+}
 
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -115,20 +179,22 @@ function isGroupOrBroadcast(chatId: string): boolean {
 }
 
 function buildWahaHeaders(): Record<string, string> {
+  const config = readDashboardWahaConfig();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
 
-  if (WAHA_API_KEY) {
-    headers['X-Api-Key'] = WAHA_API_KEY;
-    headers.Authorization = `Bearer ${WAHA_API_KEY}`;
+  if (config.wahaApiKey) {
+    headers['X-Api-Key'] = config.wahaApiKey;
+    headers.Authorization = `Bearer ${config.wahaApiKey}`;
   }
 
   return headers;
 }
 
 function buildWahaUrl(path: string, params?: Record<string, string>): string {
-  const url = new URL(path, WAHA_URL);
+  const config = readDashboardWahaConfig();
+  const url = new URL(path, config.wahaUrl);
 
   if (params) {
     for (const [key, value] of Object.entries(params)) {
@@ -152,9 +218,10 @@ function statusLabel(status: ManagedNumberStatus): string {
 }
 
 async function fetchWahaChats(limit = 300): Promise<WahaFetchResult<WahaChat>> {
+  const config = readDashboardWahaConfig();
   try {
     const response = await fetch(
-      buildWahaUrl(`/api/${encodeURIComponent(WAHA_SESSION)}/chats`, {
+      buildWahaUrl(`/api/${encodeURIComponent(config.wahaSession)}/chats`, {
         limit: String(limit),
         offset: '0',
       }),
@@ -216,10 +283,11 @@ async function fetchWahaChats(limit = 300): Promise<WahaFetchResult<WahaChat>> {
 }
 
 async function fetchWahaContacts(limit = 500): Promise<WahaFetchResult<WahaContact>> {
+  const config = readDashboardWahaConfig();
   try {
     const response = await fetch(
       buildWahaUrl('/api/contacts/all', {
-        session: WAHA_SESSION,
+        session: config.wahaSession,
         limit: String(limit),
         offset: '0',
       }),
@@ -281,9 +349,10 @@ async function fetchWahaContacts(limit = 500): Promise<WahaFetchResult<WahaConta
 }
 
 async function fetchWahaLabels(): Promise<WahaFetchResult<WahaLabel>> {
+  const config = readDashboardWahaConfig();
   try {
     const response = await fetch(
-      buildWahaUrl(`/api/${encodeURIComponent(WAHA_SESSION)}/labels`),
+      buildWahaUrl(`/api/${encodeURIComponent(config.wahaSession)}/labels`),
       {
         method: 'GET',
         headers: buildWahaHeaders(),
@@ -339,10 +408,11 @@ async function fetchWahaLabels(): Promise<WahaFetchResult<WahaLabel>> {
 }
 
 async function fetchChatsByLabelId(labelId: string): Promise<WahaSetFetchResult> {
+  const config = readDashboardWahaConfig();
   try {
     const response = await fetch(
       buildWahaUrl(
-        `/api/${encodeURIComponent(WAHA_SESSION)}/labels/${encodeURIComponent(labelId)}/chats`
+        `/api/${encodeURIComponent(config.wahaSession)}/labels/${encodeURIComponent(labelId)}/chats`
       ),
       {
         method: 'GET',
@@ -602,8 +672,14 @@ function buildSummary(rows: DashboardRow[]) {
   };
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  if (!isAdminAuthenticated(request)) {
+    return createUnauthorizedResponse();
+  }
+
   try {
+    const wahaConfig = await loadDashboardWahaConfig();
+
     const [
       incomingNumbers,
       knownNumbers,
@@ -626,7 +702,8 @@ export async function GET() {
 
     const leadLabel = labelsResult.items.find(
       (label) =>
-        label.name.toLowerCase() === WAHA_NEW_LEAD_LABEL_NAME.toLowerCase()
+        label.name.toLowerCase() ===
+        wahaConfig.wahaNewLeadLabelName.toLowerCase()
     );
 
     let labeledChatIds = new Set<string>();
@@ -647,12 +724,12 @@ export async function GET() {
       contacts: contactsResult.items,
       conversationStates,
       labeledChatIds,
-      leadLabelName: WAHA_NEW_LEAD_LABEL_NAME,
+      leadLabelName: wahaConfig.wahaNewLeadLabelName,
     });
 
     return NextResponse.json({
       generatedAt: new Date().toISOString(),
-      leadLabelName: WAHA_NEW_LEAD_LABEL_NAME,
+      leadLabelName: wahaConfig.wahaNewLeadLabelName,
       statusOptions: MANAGED_STATUSES.map((status) => ({
         value: status,
         label: statusLabel(status),
@@ -686,7 +763,13 @@ type DashboardMutationBody = {
 };
 
 export async function POST(request: NextRequest) {
+  if (!isAdminAuthenticated(request)) {
+    return createUnauthorizedResponse();
+  }
+
   try {
+    await loadDashboardWahaConfig();
+
     const body = (await request.json()) as DashboardMutationBody;
     const action = normalizeText(body.action);
 
@@ -729,12 +812,14 @@ export async function POST(request: NextRequest) {
         (contact) => contact.number || contact.id
       );
       const addedIncoming = await saveIncomingLeadNumbers(sourceValues);
+      const addedKnown = await saveKnownLeadNumbers(sourceValues);
 
       return NextResponse.json({
         ok: true,
         action,
         fetchedContacts: contactsResult.items.length,
         addedIncoming,
+        addedKnown,
       });
     }
 
@@ -751,12 +836,31 @@ export async function POST(request: NextRequest) {
 
     if (action === 'mark_known') {
       const ok = await saveKnownLeadNumber(phoneNumber);
-      return NextResponse.json({ ok, action, phoneNumber });
+      const clearedOverride = await clearNumberStatusOverride(phoneNumber);
+      const clearedProcessing = await removeProcessingLeadNumber(phoneNumber);
+      const clearedConversations = resetConversationByPhoneNumber(phoneNumber);
+
+      return NextResponse.json({
+        ok: ok && clearedOverride && clearedProcessing,
+        action,
+        phoneNumber,
+        clearedConversations,
+      });
     }
 
     if (action === 'unmark_known') {
-      const ok = await removeKnownLeadNumber(phoneNumber);
-      return NextResponse.json({ ok, action, phoneNumber });
+      const removedKnown = await removeKnownLeadNumber(phoneNumber);
+      const overrideSet = await setNumberStatusOverride(phoneNumber, 'pernah_chat');
+      const clearedProcessing = await removeProcessingLeadNumber(phoneNumber);
+      const clearedConversations = resetConversationByPhoneNumber(phoneNumber);
+
+      return NextResponse.json({
+        ok: removedKnown && overrideSet && clearedProcessing,
+        action,
+        phoneNumber,
+        forcedStatus: 'pernah_chat',
+        clearedConversations,
+      });
     }
 
     if (action === 'set_status') {

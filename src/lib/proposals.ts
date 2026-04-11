@@ -53,6 +53,16 @@ const PROPOSAL_INTENT_TERMS = [
   'pdf',
 ];
 
+const PROPOSAL_INTENT_TOKEN_PREFIXES = [
+  'proposal',
+  'brosur',
+  'brochure',
+  'prospektus',
+  'deck',
+  'pdf',
+  'companyprofile',
+];
+
 const BRAND_MATCH_NOISE_TOKENS = new Set([
   'proposal',
   'brand',
@@ -685,7 +695,14 @@ function hasProposalIntent(messageText: string): boolean {
     return false;
   }
 
-  return PROPOSAL_INTENT_TERMS.some((term) => matchesTerm(normalizedMessage, term));
+  if (PROPOSAL_INTENT_TERMS.some((term) => matchesTerm(normalizedMessage, term))) {
+    return true;
+  }
+
+  const messageTokens = tokenizeNormalizedText(normalizedMessage);
+  return messageTokens.some((token) =>
+    PROPOSAL_INTENT_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))
+  );
 }
 
 function findBestCatalogMatch(

@@ -89,6 +89,26 @@ export async function saveKnownLeadNumber(chatId: string): Promise<boolean> {
   return addPhoneNumberToSet(REDIS_KNOWN_NUMBERS_KEY, chatId);
 }
 
+export async function saveKnownLeadNumbers(chatIds: string[]): Promise<number> {
+  const client = await getRedisClient();
+  if (!client) {
+    return 0;
+  }
+
+  const normalizedNumbers = [...new Set(chatIds.map(normalizePhoneNumber).filter(Boolean))];
+  if (normalizedNumbers.length === 0) {
+    return 0;
+  }
+
+  try {
+    const added = await client.sAdd(REDIS_KNOWN_NUMBERS_KEY, normalizedNumbers);
+    return Number(added || 0);
+  } catch (error) {
+    console.error('[Redis] Failed to save known lead numbers in bulk:', error);
+    return 0;
+  }
+}
+
 export async function saveProcessingLeadNumber(chatId: string): Promise<boolean> {
   return addPhoneNumberToSet(REDIS_PROCESSING_NUMBERS_KEY, chatId);
 }

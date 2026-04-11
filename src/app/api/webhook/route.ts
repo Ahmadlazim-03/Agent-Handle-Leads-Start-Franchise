@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { openai, AI_MODEL } from '@/lib/openai';
+import { createOpenAIClient, getOpenAIModel } from '@/lib/openai';
 import {
   sendWhatsAppMessage,
+  isKnownLeadByAliases,
   isNewLead,
   applyLeadCompletionLabel,
 } from '@/lib/waha';
@@ -20,17 +21,20 @@ import {
   parseLeadFromMessage,
   stripLeadPayload,
 } from '@/prompts/agent';
+import { DEFAULT_RUNTIME_SYSTEM_PROMPT } from '@/prompts/runtime-system';
 import {
   getConversationState,
   createConversationState,
   addMessageToState,
   updateConversationState,
   markConversationComplete,
+  resetConversationByPhoneNumber,
 } from '@/lib/store';
 import {
   listAvailableProposalBrands,
   resolveBrandProposalRequest,
 } from '@/lib/proposals';
+import { getRuntimeSystemPrompt } from '@/lib/prompt-config';
 
 export const runtime = 'nodejs';
 
@@ -39,6 +43,7 @@ const DUPLICATE_MESSAGE_TTL_MS = 10 * 60 * 1000;
 const MAX_MODEL_CONTEXT_MESSAGES = 8;
 const MAX_PRIMARY_RESPONSE_SENTENCES = 3;
 const processedMessageIds = new Map<string, number>();
+const activeChatRequests = new Set<string>();
 
 type LeadField =
   | 'sumberInfo'
@@ -75,14 +80,6 @@ const REQUIRED_TIME_SLOT_QUESTION =
 const DEFAULT_URGENCY_MESSAGE =
   'Promo diskon 10% masih aktif dan kuota di kota Kakak terbatas.';
 
-const RUNTIME_SYSTEM_PROMPT = `Anda adalah Melisa, AI Business Consultant StartFranchise.id.
-Tujuan utama: kumpulkan 5 data lead (sumberInfo, biodata nama+domisili, bidangUsaha, budget, rencanaMulai) sampai lengkap untuk disimpan ke spreadsheet.
-Aturan balasan: bahasa Indonesia profesional, ramah, natural, maksimal 2-3 kalimat utama, gunakan sapaan Kakak/Kak, jangan pakai prefix Bot/User/Assistant, dan akhiri dengan kalimat tanya.
-Balas seperti manusia dan customer service profesional: validasi konteks user secara empatik, jangan copy-paste template berulang, dan sesuaikan nada dengan kondisi user.
-Jika budget belum jelas, arahkan ke opsi: <50 juta, 50-100 juta, atau 100 juta ke atas.
-Meeting hanya ditawarkan jika user terlihat serius dan minimal 3 data sudah terkumpul. Jangan ulang meeting dan urgency di setiap balasan.
-Jika semua data lengkap, tambahkan tag [LEAD_COMPLETE] di akhir balasan dengan JSON valid berisi: sumberInfo, biodata, bidangUsaha, budget, rencanaMulai.`;
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -110,6 +107,32 @@ function normalizeChatId(chatId: string): string {
     .replace(/@c\.us$/i, '')
     .replace(/@s\.whatsapp\.net$/i, '')
     .trim();
+}
+
+function resolveLeadIdentifier(
+  rawChatIdentifier: string | null,
+  normalizedChatId: string
+): string {
+  const raw = rawChatIdentifier?.trim() || '';
+  if (raw && /@lid$/i.test(raw)) {
+    return raw;
+  }
+
+  if (/@lid$/i.test(normalizedChatId)) {
+    return normalizedChatId;
+  }
+
+  const digitsFromRaw = raw.replace(/\D/g, '');
+  if (digitsFromRaw) {
+    return `${digitsFromRaw}@lid`;
+  }
+
+  const digitsFromNormalized = normalizedChatId.replace(/\D/g, '');
+  if (digitsFromNormalized) {
+    return `${digitsFromNormalized}@lid`;
+  }
+
+  return normalizedChatId;
 }
 
 function extractChatIdentifier(payload: JsonRecord): string | null {
@@ -151,6 +174,48 @@ function extractChatIdentifier(payload: JsonRecord): string | null {
   return nestedIdentifier.trim();
 }
 
+function collectIdentifierCandidates(payload: JsonRecord): string[] {
+  const identifiers = new Set<string>();
+
+  const appendIdentifier = (value: unknown): void => {
+    if (typeof value !== 'string') {
+      return;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    identifiers.add(trimmed);
+  };
+
+  appendIdentifier(payload.chatId);
+  appendIdentifier(payload.from);
+  appendIdentifier(payload.to);
+  appendIdentifier(payload.author);
+  appendIdentifier(payload.participant);
+
+  const directKey = asRecord(payload.key);
+  appendIdentifier(directKey?.remoteJid);
+  appendIdentifier(directKey?.participant);
+
+  const nestedMessage = asRecord(payload.message);
+  if (nestedMessage) {
+    appendIdentifier(nestedMessage.chatId);
+    appendIdentifier(nestedMessage.from);
+    appendIdentifier(nestedMessage.to);
+    appendIdentifier(nestedMessage.author);
+    appendIdentifier(nestedMessage.participant);
+
+    const nestedKey = asRecord(nestedMessage.key);
+    appendIdentifier(nestedKey?.remoteJid);
+    appendIdentifier(nestedKey?.participant);
+  }
+
+  return [...identifiers];
+}
+
 function isGroupOrBroadcastIdentifier(identifier: string): boolean {
   const normalized = identifier.trim().toLowerCase();
 
@@ -190,7 +255,9 @@ function isGroupOrBroadcastPayload(payload: JsonRecord): boolean {
 
 export async function POST(request: NextRequest) {
   let messageId: string | null = null;
+  let dedupeKey: string | null = null;
   let dedupeMarked = false;
+  let lockedChatId: string | null = null;
 
   try {
     const body = (await request.json()) as unknown;
@@ -202,6 +269,7 @@ export async function POST(request: NextRequest) {
     }
 
     const chatIdentifier = extractChatIdentifier(payload);
+    const identifierCandidates = collectIdentifierCandidates(payload);
     if (isGroupOrBroadcastPayload(payload)) {
       console.log(
         `Ignoring group/broadcast message source=${chatIdentifier || 'unknown'}`
@@ -210,16 +278,55 @@ export async function POST(request: NextRequest) {
     }
 
     const chatId = extractChatId(payload);
-    const messageText = extractMessageText(payload);
-
-    if (!chatId || !messageText) {
-      console.log('Invalid payload, ignoring...');
-      return NextResponse.json({ status: 'ignored_invalid_message' });
-    }
-
     if (isFromMe(payload)) {
+      if (chatId && !isGroupOrBroadcastIdentifier(chatId)) {
+        const incomingSeeded = await saveIncomingLeadNumber(chatId);
+        const knownSeeded = await saveKnownLeadNumber(chatId);
+        const processingCleared = await removeProcessingLeadNumber(chatId);
+
+        if (!incomingSeeded || !knownSeeded) {
+          console.warn(
+            `[Gatekeeper] Outbound seed failed for ${chatId}: incomingSeeded=${incomingSeeded}, knownSeeded=${knownSeeded}`
+          );
+        } else {
+          console.log(
+            `[Gatekeeper] Outbound message detected for ${chatId}, Redis seed completed (known + incoming).`
+          );
+        }
+
+        if (!processingCleared) {
+          console.warn(
+            `[Gatekeeper] Failed to clear processing set for outbound chatId=${chatId}.`
+          );
+        }
+      }
+
       return NextResponse.json({ status: 'ignored_from_me' });
     }
+
+    const messageText = extractMessageText(payload);
+
+    if (chatId && isGroupOrBroadcastIdentifier(chatId)) {
+      console.log(`Ignoring group/broadcast chatId=${chatId}`);
+      return NextResponse.json({ status: 'ignored_group_or_broadcast' });
+    }
+
+    if (!chatId || !messageText) {
+      console.log(
+        `Ignoring non-text webhook event source=${chatIdentifier || 'unknown'}`
+      );
+      return NextResponse.json({ status: 'ignored_non_text_event' });
+    }
+
+    if (activeChatRequests.has(chatId)) {
+      console.log(
+        `[RaceGuard] Concurrent webhook ignored for busy chatId=${chatId}`
+      );
+      return NextResponse.json({ status: 'ignored_chat_busy' });
+    }
+
+    activeChatRequests.add(chatId);
+    lockedChatId = chatId;
 
     const incomingSavedToRedis = await saveIncomingLeadNumber(chatId);
     if (!incomingSavedToRedis) {
@@ -229,18 +336,30 @@ export async function POST(request: NextRequest) {
     }
 
     messageId = extractMessageId(payload);
-    if (!shouldProcessMessage(messageId)) {
-      console.log(`Duplicate webhook ignored for messageId=${messageId}`);
+    dedupeKey = messageId ?? buildSyntheticMessageId(payload, chatId, messageText);
+
+    if (!shouldProcessMessage(dedupeKey)) {
+      console.log(
+        `Duplicate webhook ignored for key=${dedupeKey || 'unknown'}`
+      );
       return NextResponse.json({ status: 'ignored_duplicate' });
     }
-    dedupeMarked = messageId !== null;
+    dedupeMarked = dedupeKey !== null;
 
-    const isComplete = await handleConversation(chatId, messageText);
+    const leadIdentifier = resolveLeadIdentifier(chatIdentifier, chatId);
+    const runtimeSystemPrompt = await getRuntimeSystemPrompt();
+    const isComplete = await handleConversation(
+      chatId,
+      messageText,
+      leadIdentifier,
+      identifierCandidates,
+      runtimeSystemPrompt
+    );
 
     return NextResponse.json({ status: isComplete ? 'complete' : 'processed' });
   } catch (error) {
-    if (dedupeMarked && messageId) {
-      processedMessageIds.delete(messageId);
+    if (dedupeMarked && dedupeKey) {
+      processedMessageIds.delete(dedupeKey);
     }
 
     console.error('Webhook error:', error);
@@ -248,6 +367,10 @@ export async function POST(request: NextRequest) {
       { error: 'Internal server error' },
       { status: 500 }
     );
+  } finally {
+    if (lockedChatId) {
+      activeChatRequests.delete(lockedChatId);
+    }
   }
 }
 
@@ -378,6 +501,53 @@ function extractMessageId(payload: JsonRecord): string | null {
   return nestedId.length > 0 ? nestedId : null;
 }
 
+function extractMessageTimestamp(payload: JsonRecord): number | null {
+  const nestedMessage = asRecord(payload.message);
+  const nestedKey = asRecord(payload.key);
+
+  const candidates: unknown[] = [
+    payload.timestamp,
+    payload.messageTimestamp,
+    nestedMessage?.timestamp,
+    nestedMessage?.messageTimestamp,
+    nestedKey?.timestamp,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return Math.trunc(candidate);
+    }
+
+    if (typeof candidate === 'string') {
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed)) {
+        return Math.trunc(parsed);
+      }
+    }
+  }
+
+  return null;
+}
+
+function buildSyntheticMessageId(
+  payload: JsonRecord,
+  chatId: string,
+  messageText: string
+): string | null {
+  const normalizedText = normalizeWhitespace(messageText)
+    .toLowerCase()
+    .slice(0, 180);
+
+  if (!normalizedText) {
+    return null;
+  }
+
+  const extractedTimestamp = extractMessageTimestamp(payload);
+  const keyTimestamp = extractedTimestamp ?? Math.floor(Date.now() / 3000);
+
+  return `synthetic:${chatId}:${keyTimestamp}:${normalizedText}`;
+}
+
 function cleanupProcessedMessages(): void {
   const now = Date.now();
 
@@ -415,7 +585,10 @@ function summarizeFieldValue(value?: string): string {
   return normalizeWhitespace(value);
 }
 
-function buildRuntimeSystemMessage(collectedData: Record<string, string>): string {
+function buildRuntimeSystemMessage(
+  runtimeSystemPrompt: string,
+  collectedData: Record<string, string>
+): string {
   const snapshot = [
     `sumberInfo=${summarizeFieldValue(collectedData.sumberInfo)}`,
     `biodata=${summarizeFieldValue(collectedData.biodata)}`,
@@ -427,13 +600,31 @@ function buildRuntimeSystemMessage(collectedData: Record<string, string>): strin
   const missingFields = getMissingLeadFields(collectedData);
   const missingSummary = missingFields.length > 0 ? missingFields.join(', ') : 'tidak ada';
 
-  return `${RUNTIME_SYSTEM_PROMPT}\nDATA SAAT INI: ${snapshot}\nFIELD BELUM LENGKAP: ${missingSummary}.`;
+  const basePrompt = runtimeSystemPrompt.trim() || DEFAULT_RUNTIME_SYSTEM_PROMPT;
+  return `${basePrompt}\nDATA SAAT INI: ${snapshot}\nFIELD BELUM LENGKAP: ${missingSummary}.`;
 }
 
 function normalizeBudgetText(value: string): string {
   return normalizeWhitespace(value)
     .replace(/\bjt\b/gi, 'juta')
     .replace(/\bm\b/gi, 'miliar');
+}
+
+function extractLabeledFieldValue(text: string, labelPattern: string): string {
+  const pattern = new RegExp(
+    `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=\\b(?:sumber\\s*info|sumber|biodata|bidang\\s*usaha|budget|anggaran|rencana\\s*mulai|timeline)\\b\\s*:|$)`,
+    'i'
+  );
+
+  const match = text.match(pattern);
+  if (!match?.[1]) {
+    return '';
+  }
+
+  return match[1]
+    .replace(/^[-:|;,\s]+/, '')
+    .replace(/[-:|;,\s]+$/, '')
+    .trim();
 }
 
 function extractSourceInfo(text: string): string {
@@ -546,13 +737,40 @@ function inferLeadDataFromUserMessage(
   messageText: string
 ): Partial<Record<LeadField, string>> {
   const normalizedMessage = normalizeWhitespace(messageText);
+  const labeledSource = extractLabeledFieldValue(
+    normalizedMessage,
+    'sumber\\s*info|sumber'
+  );
+  const labeledBiodata = extractLabeledFieldValue(
+    normalizedMessage,
+    'biodata|nama\\s*&\\s*kota|nama\\s+dan\\s+kota'
+  );
+  const labeledBusinessField = extractLabeledFieldValue(
+    normalizedMessage,
+    'bidang\\s*usaha|usaha'
+  );
+  const labeledBudget = extractLabeledFieldValue(
+    normalizedMessage,
+    'budget|anggaran'
+  );
+  const labeledStartPlan = extractLabeledFieldValue(
+    normalizedMessage,
+    'rencana\\s*mulai|timeline'
+  );
 
   return {
-    sumberInfo: extractSourceInfo(normalizedMessage),
-    biodata: extractBiodata(normalizedMessage),
-    bidangUsaha: extractBusinessField(normalizedMessage),
-    budget: extractBudget(normalizedMessage),
-    rencanaMulai: extractStartPlan(normalizedMessage),
+    sumberInfo: labeledSource || extractSourceInfo(normalizedMessage),
+    biodata: labeledBiodata || extractBiodata(normalizedMessage),
+    bidangUsaha:
+      (labeledBusinessField &&
+        normalizeWhitespace(labeledBusinessField).replace(/[.!?]+$/, '')) ||
+      extractBusinessField(normalizedMessage),
+    budget:
+      (labeledBudget && normalizeBudgetText(labeledBudget)) ||
+      extractBudget(normalizedMessage),
+    rencanaMulai:
+      (labeledStartPlan && normalizeWhitespace(labeledStartPlan)) ||
+      extractStartPlan(normalizedMessage),
   };
 }
 
@@ -867,19 +1085,94 @@ function buildProposalLinkMessage(
   return `${caption}\n\nLink proposal ${brandName}: ${fileUrl}`;
 }
 
-async function handleConversation(
+async function tryHandleProposalIntent(
   chatId: string,
   messageText: string
+): Promise<boolean> {
+  const proposalLookup = await resolveBrandProposalRequest(messageText);
+  if (!proposalLookup.isProposalIntent) {
+    return false;
+  }
+
+  if (!proposalLookup.proposal) {
+    const clarificationMessage = await buildProposalClarificationMessage();
+
+    await delay(AI_RESPONSE_DELAY_MS);
+
+    const clarificationSent = await sendWhatsAppMessage(chatId, clarificationMessage);
+    if (!clarificationSent) {
+      console.error(`Failed to send proposal clarification to ${chatId}`);
+    }
+
+    const assistantState = addMessageToState(
+      chatId,
+      'assistant',
+      clarificationMessage
+    );
+    if (!assistantState) {
+      console.warn(
+        `[Conversation] Missing state for ${chatId} when saving proposal clarification`
+      );
+    }
+
+    return true;
+  }
+
+  const proposal = proposalLookup.proposal;
+  const proposalMessage = buildProposalLinkMessage(
+    proposal.brandName,
+    proposal.fileUrl,
+    proposal.caption
+  );
+
+  await delay(AI_RESPONSE_DELAY_MS);
+
+  const linkSent = await sendWhatsAppMessage(chatId, proposalMessage);
+  if (!linkSent) {
+    console.error(
+      `Failed to send proposal link message for ${chatId} brand=${proposal.brandName}`
+    );
+  }
+
+  const assistantState = addMessageToState(chatId, 'assistant', proposalMessage);
+  if (!assistantState) {
+    console.warn(`[Conversation] Missing state for ${chatId} when saving proposal reply`);
+  }
+
+  return true;
+}
+
+async function handleConversation(
+  chatId: string,
+  messageText: string,
+  leadIdentifier: string,
+  identifierCandidates: string[],
+  runtimeSystemPrompt: string
 ): Promise<boolean> {
   if (isGroupOrBroadcastIdentifier(chatId)) {
     console.log(`Conversation ignored for non-personal chatId=${chatId}`);
     return false;
   }
 
+  const matchedKnownAlias = await isKnownLeadByAliases(
+    chatId,
+    identifierCandidates
+  );
+  if (matchedKnownAlias) {
+    resetConversationByPhoneNumber(chatId);
+    const removedFromProcessing = await removeProcessingLeadNumber(chatId);
+    if (!removedFromProcessing) {
+      console.warn(`[Redis] Failed to unmark processing for known chatId=${chatId}.`);
+    }
+
+    console.log(`Chat ID ${chatId} is not a new lead, ignoring...`);
+    return false;
+  }
+
   let state = getConversationState(chatId);
 
   if (!state) {
-    const isLeadNew = await isNewLead(chatId);
+    const isLeadNew = await isNewLead(chatId, identifierCandidates);
     if (!isLeadNew) {
       console.log(`Chat ID ${chatId} is not a new lead, ignoring...`);
       return false;
@@ -889,8 +1182,17 @@ async function handleConversation(
   }
 
   if (state.isComplete) {
+    const proposalHandled = await tryHandleProposalIntent(chatId, messageText);
+    const removedFromProcessing = await removeProcessingLeadNumber(chatId);
+    if (!removedFromProcessing) {
+      console.warn(`[Redis] Failed to unmark processing for ${chatId} on complete state.`);
+    }
+
+    if (proposalHandled) {
+      return false;
+    }
+
     console.log(`Conversation for ${chatId} is already complete, ignoring...`);
-    await removeProcessingLeadNumber(chatId);
     return true;
   }
 
@@ -938,7 +1240,7 @@ async function handleConversation(
     );
 
     const telegramDealSent = await sendTelegramDealMeetingNotification({
-      phoneNumber: chatId,
+      phoneNumber: leadIdentifier,
       meetingSchedule,
       latestUserMessage: messageText,
       collectedData: stateWithUserMessage.collectedData,
@@ -948,7 +1250,7 @@ async function handleConversation(
     let labelTagged = true;
 
     if (leadFromState) {
-      sheetSaved = await appendLeadToSheet(leadFromState, chatId);
+      sheetSaved = await appendLeadToSheet(leadFromState, leadIdentifier);
       labelTagged = await applyLeadCompletionLabel(chatId);
     }
 
@@ -971,53 +1273,8 @@ async function handleConversation(
     return true;
   }
 
-  const proposalLookup = await resolveBrandProposalRequest(messageText);
-  if (proposalLookup.isProposalIntent) {
-    if (!proposalLookup.proposal) {
-      const clarificationMessage = await buildProposalClarificationMessage();
-
-      await delay(AI_RESPONSE_DELAY_MS);
-
-      const clarificationSent = await sendWhatsAppMessage(chatId, clarificationMessage);
-      if (!clarificationSent) {
-        console.error(`Failed to send proposal clarification to ${chatId}`);
-      }
-
-      const assistantState = addMessageToState(
-        chatId,
-        'assistant',
-        clarificationMessage
-      );
-      if (!assistantState) {
-        console.error(
-          `Missing conversation state for ${chatId} when saving proposal clarification`
-        );
-      }
-
-      return false;
-    }
-
-    const proposal = proposalLookup.proposal;
-    const proposalMessage = buildProposalLinkMessage(
-      proposal.brandName,
-      proposal.fileUrl,
-      proposal.caption
-    );
-
-    await delay(AI_RESPONSE_DELAY_MS);
-
-    const linkSent = await sendWhatsAppMessage(chatId, proposalMessage);
-    if (!linkSent) {
-      console.error(
-        `Failed to send proposal link message for ${chatId} brand=${proposal.brandName}`
-      );
-    }
-
-    const assistantState = addMessageToState(chatId, 'assistant', proposalMessage);
-    if (!assistantState) {
-      console.error(`Missing conversation state for ${chatId} when saving proposal reply`);
-    }
-
+  const proposalHandled = await tryHandleProposalIntent(chatId, messageText);
+  if (proposalHandled) {
     return false;
   }
 
@@ -1026,14 +1283,23 @@ async function handleConversation(
   );
 
   const runtimeSystemMessage = buildRuntimeSystemMessage(
+    runtimeSystemPrompt,
     stateWithUserMessage.collectedData
   );
   const recentConversationMessages = stateWithUserMessage.messages.slice(
     -MAX_MODEL_CONTEXT_MESSAGES
   );
 
-  const response = await openai.chat.completions.create({
-    model: AI_MODEL,
+  const openaiClient = await createOpenAIClient();
+  if (!openaiClient) {
+    console.error('OPENAI_API_KEY is missing. AI reply cannot be generated.');
+    return false;
+  }
+
+  const openaiModel = await getOpenAIModel();
+
+  const response = await openaiClient.chat.completions.create({
+    model: openaiModel,
     messages: [
       {
         role: 'system',
@@ -1052,18 +1318,30 @@ async function handleConversation(
     return false;
   }
 
-  const leadData = parseLeadFromMessage(aiReply);
+  const parsedLeadData = parseLeadFromMessage(aiReply);
 
-  if (leadData) {
+  if (parsedLeadData) {
     stateWithUserMessage.collectedData = {
       ...stateWithUserMessage.collectedData,
-      ...leadData,
+      ...parsedLeadData,
     };
     updateConversationState(chatId, stateWithUserMessage);
   }
 
+  const fallbackLeadData = toLeadDataFromCollectedData(
+    stateWithUserMessage.collectedData
+  );
+  const finalLeadData = parsedLeadData ?? fallbackLeadData;
+  const completedFromStateFallback = !parsedLeadData && Boolean(finalLeadData);
+
+  if (completedFromStateFallback) {
+    console.warn(
+      `[Lead] Completing ${chatId} from collected state fallback because LEAD_COMPLETE payload was not detected.`
+    );
+  }
+
   const aiReplyForDelivery =
-    leadData || missingFieldsBeforeReply.length !== 2
+    finalLeadData || missingFieldsBeforeReply.length !== 2
       ? aiReply
       : ensureTwoFieldFollowUp(aiReply, missingFieldsBeforeReply);
 
@@ -1071,19 +1349,26 @@ async function handleConversation(
   const collectedFieldCount = countCollectedLeadFields(
     stateWithUserMessage.collectedData
   );
+  const completionReplyFallback =
+    'Terima kasih, Kakak. Informasi Kakak sudah lengkap dan sudah kami catat. Kakak mau lihat proposal brand apa?';
+  const replySeed = completedFromStateFallback
+    ? completionReplyFallback
+    : cleanReply ||
+      'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.';
+  const leadIsComplete = Boolean(finalLeadData);
   const shouldOfferMeeting =
-    !leadData &&
+    !leadIsComplete &&
     collectedFieldCount >= 3 &&
     hasHighIntentSignal(messageText) &&
     !hasAssistantMentionedMeeting(stateWithUserMessage.messages);
   const shouldIncludeUrgency =
+    !leadIsComplete &&
     shouldOfferMeeting &&
     !hasAssistantMentionedUrgency(stateWithUserMessage.messages);
   const empathyLine = buildEmpathyLine(messageText);
 
   const outgoingReply = enforceFranchiseeReplyStyle(
-    cleanReply ||
-      'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.',
+    replySeed,
     {
       includeUrgency: shouldIncludeUrgency,
       includeMeetingOffer: shouldOfferMeeting,
@@ -1103,11 +1388,14 @@ async function handleConversation(
     console.error(`Missing conversation state for ${chatId} when adding assistant message`);
   }
 
-  if (leadData) {
+  if (finalLeadData) {
     console.log('Lead complete! Processing final actions...');
 
-    const sheetSaved = await appendLeadToSheet(leadData, chatId);
-    const telegramSent = await sendTelegramNotification(leadData, chatId);
+    const sheetSaved = await appendLeadToSheet(finalLeadData, leadIdentifier);
+    const telegramSent = await sendTelegramNotification(
+      finalLeadData,
+      leadIdentifier
+    );
     const labelTagged = await applyLeadCompletionLabel(chatId);
     const removedFromProcessing = await removeProcessingLeadNumber(chatId);
     const knownSavedToRedis = await saveKnownLeadNumber(chatId);

@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 type ManagedNumberStatus = 'pernah_chat' | 'proses_bot' | 'selesai_berlabel';
@@ -43,6 +44,70 @@ type DashboardResponse = {
   rows: DashboardRow[];
 };
 
+type PromptSource = 'default' | 'redis-custom';
+
+type PromptResponse = {
+  ok?: boolean;
+  error?: string;
+  prompt?: string;
+  defaultPrompt?: string;
+  source?: PromptSource;
+  isCustom?: boolean;
+  updatedAt?: string | null;
+  promptLength?: number;
+};
+
+type IntegrationKey = 'redis' | 'waha' | 'telegram' | 'spreadsheet';
+
+type IntegrationService = {
+  key: IntegrationKey;
+  label: string;
+  connected: boolean;
+  configured: boolean;
+  message: string;
+  latencyMs: number | null;
+  checkedAt: string;
+};
+
+type IntegrationsResponse = {
+  ok?: boolean;
+  error?: string;
+  checkedAt?: string;
+  summary?: {
+    connected: number;
+    total: number;
+  };
+  services?: IntegrationService[];
+};
+
+type RuntimeEnvSource = 'runtime' | 'env' | 'default';
+
+type RuntimeEnvItem = {
+  key: string;
+  label: string;
+  description: string;
+  value: string;
+  source: RuntimeEnvSource;
+  configured: boolean;
+  isSecret: boolean;
+  isMultiline: boolean;
+  updatedAt: string | null;
+};
+
+type RuntimeEnvResponse = {
+  ok?: boolean;
+  error?: string;
+  checkedAt?: string;
+  items?: RuntimeEnvItem[];
+};
+
+type RuntimeEnvMutationResponse = {
+  ok?: boolean;
+  error?: string;
+  action?: string;
+  item?: RuntimeEnvItem;
+};
+
 const EMPTY_DASHBOARD: DashboardResponse = {
   generatedAt: '',
   leadLabelName: 'Lead Baru',
@@ -67,6 +132,45 @@ const EMPTY_DASHBOARD: DashboardResponse = {
   },
   rows: [],
 };
+
+const EMPTY_INTEGRATIONS: IntegrationService[] = [
+  {
+    key: 'redis',
+    label: 'Redis',
+    connected: false,
+    configured: false,
+    message: 'Belum dicek.',
+    latencyMs: null,
+    checkedAt: '',
+  },
+  {
+    key: 'waha',
+    label: 'WAHA',
+    connected: false,
+    configured: false,
+    message: 'Belum dicek.',
+    latencyMs: null,
+    checkedAt: '',
+  },
+  {
+    key: 'telegram',
+    label: 'Telegram',
+    connected: false,
+    configured: false,
+    message: 'Belum dicek.',
+    latencyMs: null,
+    checkedAt: '',
+  },
+  {
+    key: 'spreadsheet',
+    label: 'Spreadsheet',
+    connected: false,
+    configured: false,
+    message: 'Belum dicek.',
+    latencyMs: null,
+    checkedAt: '',
+  },
+];
 
 type StatusFilter = 'all' | ManagedNumberStatus;
 type SourceFilter =
@@ -109,7 +213,44 @@ function statusBadgeClass(status: ManagedNumberStatus): string {
   return 'bg-slate-100 text-slate-700 border-slate-300';
 }
 
+function integrationStatusBadgeClass(service: IntegrationService): string {
+  if (service.connected) {
+    return 'bg-emerald-100 text-emerald-700';
+  }
+
+  if (!service.configured) {
+    return 'bg-amber-100 text-amber-700';
+  }
+
+  return 'bg-rose-100 text-rose-700';
+}
+
+function integrationStatusLabel(service: IntegrationService): string {
+  if (service.connected) {
+    return 'Connected';
+  }
+
+  if (!service.configured) {
+    return 'Not Configured';
+  }
+
+  return 'Disconnected';
+}
+
+function runtimeEnvSourceLabel(source: RuntimeEnvSource): string {
+  if (source === 'runtime') {
+    return 'Runtime Override';
+  }
+
+  if (source === 'env') {
+    return 'Env Fallback';
+  }
+
+  return 'Default Fallback';
+}
+
 export default function DashboardPage() {
+  const router = useRouter();
   const [dashboard, setDashboard] = useState<DashboardResponse>(EMPTY_DASHBOARD);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -119,10 +260,37 @@ export default function DashboardPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [busyActionKey, setBusyActionKey] = useState('');
+  const [activePrompt, setActivePrompt] = useState('');
+  const [promptDraft, setPromptDraft] = useState('');
+  const [defaultPrompt, setDefaultPrompt] = useState('');
+  const [promptSource, setPromptSource] = useState<PromptSource>('default');
+  const [promptUpdatedAt, setPromptUpdatedAt] = useState<string | null>(null);
+  const [isPromptLoading, setIsPromptLoading] = useState(true);
+  const [isPromptSaving, setIsPromptSaving] = useState(false);
+  const [promptStatusText, setPromptStatusText] = useState('');
+  const [promptErrorText, setPromptErrorText] = useState('');
+  const [integrations, setIntegrations] = useState<IntegrationService[]>(
+    EMPTY_INTEGRATIONS
+  );
+  const [integrationCheckedAt, setIntegrationCheckedAt] = useState('');
+  const [isIntegrationLoading, setIsIntegrationLoading] = useState(true);
+  const [integrationErrorText, setIntegrationErrorText] = useState('');
+  const [runtimeEnvItems, setRuntimeEnvItems] = useState<RuntimeEnvItem[]>([]);
+  const [runtimeEnvDrafts, setRuntimeEnvDrafts] = useState<Record<string, string>>({});
+  const [runtimeEnvCheckedAt, setRuntimeEnvCheckedAt] = useState('');
+  const [isRuntimeEnvLoading, setIsRuntimeEnvLoading] = useState(true);
+  const [runtimeEnvBusyKey, setRuntimeEnvBusyKey] = useState('');
+  const [runtimeEnvStatusText, setRuntimeEnvStatusText] = useState('');
+  const [runtimeEnvErrorText, setRuntimeEnvErrorText] = useState('');
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const isBulkRunning =
     busyActionKey === 'bulk:clear_all_numbers' ||
     busyActionKey === 'bulk:refetch_contacts';
+  const isPromptDirty = promptDraft.trim() !== activePrompt.trim();
+  const runtimeEnvConnectedCount = runtimeEnvItems.filter(
+    (item) => item.configured
+  ).length;
 
   const loadDashboard = useCallback(async (showRefreshing = false) => {
     if (showRefreshing) {
@@ -159,9 +327,130 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const loadPromptConfig = useCallback(async (showRefreshing = false) => {
+    if (!showRefreshing) {
+      setIsPromptLoading(true);
+    }
+
+    setPromptErrorText('');
+
+    try {
+      const response = await fetch('/api/dashboard/prompt', {
+        method: 'GET',
+        cache: 'no-store',
+      });
+
+      const payload = (await response.json()) as PromptResponse;
+
+      if (!response.ok || !payload.ok || typeof payload.prompt !== 'string') {
+        const message =
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Gagal memuat prompt AI.';
+        throw new Error(message);
+      }
+
+      const loadedPrompt = payload.prompt;
+
+      setActivePrompt(loadedPrompt);
+      setPromptDraft(loadedPrompt);
+      setDefaultPrompt(typeof payload.defaultPrompt === 'string' ? payload.defaultPrompt : '');
+      setPromptSource(payload.source === 'redis-custom' ? 'redis-custom' : 'default');
+      setPromptUpdatedAt(payload.updatedAt ?? null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Gagal memuat prompt AI.';
+      setPromptErrorText(message);
+    } finally {
+      setIsPromptLoading(false);
+    }
+  }, []);
+
+  const loadIntegrationStatus = useCallback(async () => {
+    setIsIntegrationLoading(true);
+    setIntegrationErrorText('');
+
+    try {
+      const response = await fetch('/api/dashboard/integrations', {
+        method: 'GET',
+        cache: 'no-store',
+      });
+
+      const payload = (await response.json()) as IntegrationsResponse;
+
+      if (!response.ok || !payload.ok || !Array.isArray(payload.services)) {
+        const message =
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Gagal memuat status koneksi integrasi.';
+        throw new Error(message);
+      }
+
+      setIntegrations(payload.services);
+      setIntegrationCheckedAt(
+        typeof payload.checkedAt === 'string'
+          ? payload.checkedAt
+          : new Date().toISOString()
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Gagal memuat status koneksi integrasi.';
+      setIntegrationErrorText(message);
+    } finally {
+      setIsIntegrationLoading(false);
+    }
+  }, []);
+
+  const loadRuntimeEnvConfig = useCallback(async () => {
+    setIsRuntimeEnvLoading(true);
+    setRuntimeEnvErrorText('');
+
+    try {
+      const response = await fetch('/api/dashboard/env', {
+        method: 'GET',
+        cache: 'no-store',
+      });
+
+      const payload = (await response.json()) as RuntimeEnvResponse;
+
+      if (!response.ok || !payload.ok || !Array.isArray(payload.items)) {
+        const message =
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Gagal memuat runtime env config.';
+        throw new Error(message);
+      }
+
+      setRuntimeEnvItems(payload.items);
+      setRuntimeEnvDrafts(
+        payload.items.reduce<Record<string, string>>((acc, item) => {
+          acc[item.key] = item.value;
+          return acc;
+        }, {})
+      );
+      setRuntimeEnvCheckedAt(
+        typeof payload.checkedAt === 'string'
+          ? payload.checkedAt
+          : new Date().toISOString()
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Gagal memuat runtime env config.';
+      setRuntimeEnvErrorText(message);
+    } finally {
+      setIsRuntimeEnvLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    void loadDashboard(false);
-  }, [loadDashboard]);
+    void Promise.all([
+      loadDashboard(false),
+      loadPromptConfig(false),
+      loadIntegrationStatus(),
+      loadRuntimeEnvConfig(),
+    ]);
+  }, [loadDashboard, loadPromptConfig, loadIntegrationStatus, loadRuntimeEnvConfig]);
 
   const filteredRows = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -239,8 +528,8 @@ export default function DashboardPage() {
 
         setStatusText(
           action === 'mark_known'
-            ? `Nomor ${phoneNumber} ditandai known.`
-            : `Nomor ${phoneNumber} dihapus dari known.`
+            ? `Nomor ${phoneNumber} ditandai known dan state percakapan direset.`
+            : `Nomor ${phoneNumber} ditandai unknown (force pernah_chat) dan state percakapan direset.`
         );
         await loadDashboard(true);
       } catch (error) {
@@ -339,6 +628,7 @@ export default function DashboardPage() {
           error?: string;
           fetchedContacts?: number;
           addedIncoming?: number;
+          addedKnown?: number;
           clearedConversations?: number;
         };
 
@@ -352,11 +642,11 @@ export default function DashboardPage() {
 
         if (action === 'clear_all_numbers') {
           setStatusText(
-            `Semua nomor berhasil dihapus. Conversation yang direset: ${payload.clearedConversations ?? 0}.`
+            `Semua nomor Redis berhasil direset. Conversation yang direset: ${payload.clearedConversations ?? 0}. Catatan: riwayat WAHA tetap ada, aktifkan mode test bila ingin nomor lama tetap dibalas.`
           );
         } else {
           setStatusText(
-            `Fetch ulang kontak berhasil. Kontak terbaca: ${payload.fetchedContacts ?? 0}, nomor ditambahkan: ${payload.addedIncoming ?? 0}.`
+            `Fetch kontak berhasil. Kontak terbaca: ${payload.fetchedContacts ?? 0}, ditambahkan ke incoming: ${payload.addedIncoming ?? 0}, ditambahkan ke known: ${payload.addedKnown ?? 0}.`
           );
         }
 
@@ -369,6 +659,246 @@ export default function DashboardPage() {
       }
     },
     [loadDashboard]
+  );
+
+  const handleLogout = useCallback(async () => {
+    if (isLoggingOut) {
+      return;
+    }
+
+    setIsLoggingOut(true);
+
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+      });
+    } finally {
+      router.replace('/login');
+      router.refresh();
+      setIsLoggingOut(false);
+    }
+  }, [isLoggingOut, router]);
+
+  const handleSavePrompt = useCallback(async () => {
+    setIsPromptSaving(true);
+    setPromptStatusText('');
+    setPromptErrorText('');
+
+    try {
+      const response = await fetch('/api/dashboard/prompt', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'save',
+          prompt: promptDraft,
+        }),
+      });
+
+      const payload = (await response.json()) as PromptResponse;
+      if (!response.ok || !payload.ok || typeof payload.prompt !== 'string') {
+        const message =
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Gagal menyimpan prompt AI.';
+        throw new Error(message);
+      }
+
+      const savedPrompt = payload.prompt;
+
+      setActivePrompt(savedPrompt);
+      setPromptDraft(savedPrompt);
+      setPromptSource(payload.source === 'redis-custom' ? 'redis-custom' : 'default');
+      setPromptUpdatedAt(payload.updatedAt ?? null);
+      setPromptStatusText('Prompt AI berhasil disimpan dan langsung menjadi prompt aktif.');
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Gagal menyimpan prompt AI.';
+      setPromptErrorText(message);
+    } finally {
+      setIsPromptSaving(false);
+    }
+  }, [promptDraft]);
+
+  const handleResetPromptToDefault = useCallback(async () => {
+    const approved = window.confirm(
+      'Reset prompt AI ke default bawaan? Prompt custom saat ini akan dihapus dari Redis.'
+    );
+
+    if (!approved) {
+      return;
+    }
+
+    setIsPromptSaving(true);
+    setPromptStatusText('');
+    setPromptErrorText('');
+
+    try {
+      const response = await fetch('/api/dashboard/prompt', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'reset',
+        }),
+      });
+
+      const payload = (await response.json()) as PromptResponse;
+      if (!response.ok || !payload.ok || typeof payload.prompt !== 'string') {
+        const message =
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Gagal reset prompt AI.';
+        throw new Error(message);
+      }
+
+      const resetPrompt = payload.prompt;
+
+      setActivePrompt(resetPrompt);
+      setPromptDraft(resetPrompt);
+      setPromptSource(payload.source === 'redis-custom' ? 'redis-custom' : 'default');
+      setPromptUpdatedAt(payload.updatedAt ?? null);
+      setPromptStatusText('Prompt AI berhasil direset ke default bawaan.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Gagal reset prompt AI.';
+      setPromptErrorText(message);
+    } finally {
+      setIsPromptSaving(false);
+    }
+  }, []);
+
+  const isRuntimeEnvDirty = useCallback(
+    (item: RuntimeEnvItem) => {
+      const draftValue = runtimeEnvDrafts[item.key] ?? '';
+      return draftValue !== item.value;
+    },
+    [runtimeEnvDrafts]
+  );
+
+  const handleRuntimeEnvDraftChange = useCallback((key: string, value: string) => {
+    setRuntimeEnvDrafts((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }, []);
+
+  const handleSaveRuntimeEnv = useCallback(
+    async (item: RuntimeEnvItem) => {
+      const draftValue = runtimeEnvDrafts[item.key] ?? '';
+      const busyKey = `save:${item.key}`;
+
+      setRuntimeEnvBusyKey(busyKey);
+      setRuntimeEnvStatusText('');
+      setRuntimeEnvErrorText('');
+
+      try {
+        const response = await fetch('/api/dashboard/env', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            action: 'save',
+            key: item.key,
+            value: draftValue,
+          }),
+        });
+
+        const payload = (await response.json()) as RuntimeEnvMutationResponse;
+        if (!response.ok || !payload.ok || !payload.item) {
+          const message =
+            typeof payload.error === 'string'
+              ? payload.error
+              : `Gagal menyimpan ${item.key}.`;
+          throw new Error(message);
+        }
+
+        const updatedItem = payload.item;
+        setRuntimeEnvItems((current) =>
+          current.map((entry) => (entry.key === updatedItem.key ? updatedItem : entry))
+        );
+        setRuntimeEnvDrafts((current) => ({
+          ...current,
+          [updatedItem.key]: updatedItem.value,
+        }));
+        setRuntimeEnvCheckedAt(new Date().toISOString());
+        setRuntimeEnvStatusText(
+          `Konfigurasi ${updatedItem.key} berhasil disimpan dan langsung aktif.`
+        );
+
+        await Promise.all([loadIntegrationStatus(), loadDashboard(true)]);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : `Gagal menyimpan ${item.key}.`;
+        setRuntimeEnvErrorText(message);
+      } finally {
+        setRuntimeEnvBusyKey('');
+      }
+    },
+    [loadDashboard, loadIntegrationStatus, runtimeEnvDrafts]
+  );
+
+  const handleResetRuntimeEnv = useCallback(
+    async (item: RuntimeEnvItem) => {
+      const approved = window.confirm(
+        `Reset ${item.key} ke fallback ENV/Default? Override runtime di Redis akan dihapus.`
+      );
+
+      if (!approved) {
+        return;
+      }
+
+      const busyKey = `reset:${item.key}`;
+      setRuntimeEnvBusyKey(busyKey);
+      setRuntimeEnvStatusText('');
+      setRuntimeEnvErrorText('');
+
+      try {
+        const response = await fetch('/api/dashboard/env', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            action: 'reset',
+            key: item.key,
+          }),
+        });
+
+        const payload = (await response.json()) as RuntimeEnvMutationResponse;
+        if (!response.ok || !payload.ok || !payload.item) {
+          const message =
+            typeof payload.error === 'string'
+              ? payload.error
+              : `Gagal reset ${item.key}.`;
+          throw new Error(message);
+        }
+
+        const updatedItem = payload.item;
+        setRuntimeEnvItems((current) =>
+          current.map((entry) => (entry.key === updatedItem.key ? updatedItem : entry))
+        );
+        setRuntimeEnvDrafts((current) => ({
+          ...current,
+          [updatedItem.key]: updatedItem.value,
+        }));
+        setRuntimeEnvCheckedAt(new Date().toISOString());
+        setRuntimeEnvStatusText(
+          `Konfigurasi ${updatedItem.key} direset ke ${runtimeEnvSourceLabel(updatedItem.source)}.`
+        );
+
+        await Promise.all([loadIntegrationStatus(), loadDashboard(true)]);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : `Gagal reset ${item.key}.`;
+        setRuntimeEnvErrorText(message);
+      } finally {
+        setRuntimeEnvBusyKey('');
+      }
+    },
+    [loadDashboard, loadIntegrationStatus]
   );
 
   const statCards = [
@@ -414,22 +944,22 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => void handleBulkAction('clear_all_numbers')}
-                disabled={isBulkRunning || isRefreshing || isLoading}
+                disabled={isBulkRunning || isRefreshing || isLoading || isLoggingOut}
                 className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busyActionKey === 'bulk:clear_all_numbers'
                   ? 'Menghapus...'
-                  : 'Hapus Semua Nomor'}
+                  : 'Reset Semua Nomor Redis'}
               </button>
               <button
                 type="button"
                 onClick={() => void handleBulkAction('refetch_contacts')}
-                disabled={isBulkRunning || isRefreshing || isLoading}
+                disabled={isBulkRunning || isRefreshing || isLoading || isLoggingOut}
                 className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busyActionKey === 'bulk:refetch_contacts'
                   ? 'Fetching...'
-                  : 'Fetch Ulang Get All Contact'}
+                  : 'Fetch Kontak -> Simpan Redis'}
               </button>
               <Link
                 href="/"
@@ -439,11 +969,36 @@ export default function DashboardPage() {
               </Link>
               <button
                 type="button"
-                onClick={() => void loadDashboard(true)}
-                disabled={isBulkRunning || isRefreshing || isLoading}
+                onClick={() => void handleLogout()}
+                disabled={isLoggingOut}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isLoggingOut ? 'Logging out...' : 'Logout'}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void Promise.all([
+                    loadDashboard(true),
+                    loadPromptConfig(true),
+                    loadIntegrationStatus(),
+                    loadRuntimeEnvConfig(),
+                  ])
+                }
+                disabled={
+                  isBulkRunning ||
+                  isRefreshing ||
+                  isLoading ||
+                  isPromptLoading ||
+                  isIntegrationLoading ||
+                  isRuntimeEnvLoading ||
+                  isLoggingOut
+                }
                 className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isRefreshing ? 'Refreshing...' : 'Refresh Data'}
+                {isRefreshing || isPromptLoading || isIntegrationLoading || isRuntimeEnvLoading
+                  ? 'Refreshing...'
+                  : 'Refresh Data'}
               </button>
             </div>
           </div>
@@ -471,6 +1026,293 @@ export default function DashboardPage() {
               <p className="mt-2 text-3xl font-bold">{card.value}</p>
             </div>
           ))}
+        </div>
+
+        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+                Integrations Health
+              </p>
+              <h2 className="mt-2 text-xl font-semibold text-slate-900">
+                Status Koneksi Layanan
+              </h2>
+              <p className="mt-1 max-w-3xl text-sm text-slate-600">
+                Cek koneksi real-time untuk Redis, WAHA, Telegram, dan Spreadsheet.
+                Gunakan panel ini untuk memastikan semua integrasi aktif sebelum run
+                bot production.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold">
+                Terhubung: {integrations.filter((service) => service.connected).length}/
+                {integrations.length}
+              </span>
+              <span className="rounded-lg bg-slate-100 px-2 py-1">
+                Dicek: {formatGeneratedAt(integrationCheckedAt)}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {integrations.map((service) => (
+              <div
+                key={service.key}
+                className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-slate-900">{service.label}</p>
+                  <span
+                    className={`rounded-full px-2 py-1 text-xs font-semibold ${integrationStatusBadgeClass(
+                      service
+                    )}`}
+                  >
+                    {integrationStatusLabel(service)}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-600">{service.message}</p>
+                <p className="mt-2 text-[11px] uppercase tracking-[0.12em] text-slate-500">
+                  {service.latencyMs === null
+                    ? 'Latency: -'
+                    : `Latency: ${service.latencyMs} ms`}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {integrationErrorText ? (
+            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {integrationErrorText}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+                AI Prompt Editor
+              </p>
+              <h2 className="mt-2 text-xl font-semibold text-slate-900">Edit Prompt Runtime AI</h2>
+              <p className="mt-1 max-w-3xl text-sm text-slate-600">
+                Perubahan prompt di panel ini hanya mempengaruhi gaya dan strategi balasan AI.
+                Core logic seperti penyimpanan spreadsheet, notifikasi Telegram, labeling WAHA,
+                dan lifecycle lead tetap menggunakan flow existing.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              <span
+                className={`rounded-lg px-2 py-1 font-semibold ${
+                  promptSource === 'redis-custom'
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-slate-100 text-slate-700'
+                }`}
+              >
+                Source: {promptSource === 'redis-custom' ? 'Custom (Redis)' : 'Default'}
+              </span>
+              <span className="rounded-lg bg-slate-100 px-2 py-1">
+                Updated: {formatGeneratedAt(promptUpdatedAt || '')}
+              </span>
+              <span className="rounded-lg bg-slate-100 px-2 py-1">
+                Panjang: {promptDraft.length} karakter
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <textarea
+              value={promptDraft}
+              onChange={(event) => setPromptDraft(event.target.value)}
+              placeholder="Masukkan prompt runtime AI di sini..."
+              disabled={isPromptLoading || isPromptSaving}
+              className="min-h-70 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 font-mono text-sm leading-6 text-slate-900 outline-none ring-cyan-400 transition focus:ring disabled:cursor-not-allowed disabled:bg-slate-50"
+            />
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void loadPromptConfig(true)}
+                disabled={isPromptLoading || isPromptSaving}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Muat Ulang Prompt
+              </button>
+              <button
+                type="button"
+                onClick={() => setPromptDraft(activePrompt)}
+                disabled={isPromptLoading || isPromptSaving || !isPromptDirty}
+                className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Reset Draft
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleResetPromptToDefault()}
+                disabled={isPromptLoading || isPromptSaving}
+                className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isPromptSaving ? 'Memproses...' : 'Reset ke Default'}
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void handleSavePrompt()}
+              disabled={isPromptLoading || isPromptSaving || !isPromptDirty}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isPromptSaving ? 'Menyimpan...' : 'Simpan Prompt'}
+            </button>
+          </div>
+
+          {promptStatusText ? (
+            <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {promptStatusText}
+            </p>
+          ) : null}
+
+          {promptErrorText ? (
+            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {promptErrorText}
+            </p>
+          ) : null}
+
+          {!defaultPrompt ? null : (
+            <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-700">
+                Lihat Prompt Default
+              </summary>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs leading-6 text-slate-700">
+                {defaultPrompt}
+              </pre>
+            </details>
+          )}
+        </div>
+
+        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+                Runtime Env Editor
+              </p>
+              <h2 className="mt-2 text-xl font-semibold text-slate-900">
+                Edit Konfigurasi .env Secara Live
+              </h2>
+              <p className="mt-1 max-w-3xl text-sm text-slate-600">
+                Panel ini menyimpan override config di Redis, sehingga perubahan key dapat
+                langsung dipakai runtime tanpa deploy ulang. Saat reset, nilai kembali ke
+                fallback ENV atau default.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold">
+                Configured: {runtimeEnvConnectedCount}/{runtimeEnvItems.length}
+              </span>
+              <span className="rounded-lg bg-slate-100 px-2 py-1">
+                Dicek: {formatGeneratedAt(runtimeEnvCheckedAt)}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {runtimeEnvItems.map((item) => {
+              const saveBusy = runtimeEnvBusyKey === `save:${item.key}`;
+              const resetBusy = runtimeEnvBusyKey === `reset:${item.key}`;
+              const itemBusy = saveBusy || resetBusy;
+              const draftValue = runtimeEnvDrafts[item.key] ?? '';
+              const isDirty = isRuntimeEnvDirty(item);
+
+              return (
+                <div
+                  key={item.key}
+                  className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{item.label}</p>
+                      <p className="text-xs text-slate-500">{item.key}</p>
+                    </div>
+                    <span
+                      className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                        item.source === 'runtime'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : item.source === 'env'
+                            ? 'bg-sky-100 text-sky-700'
+                            : 'bg-amber-100 text-amber-700'
+                      }`}
+                    >
+                      {runtimeEnvSourceLabel(item.source)}
+                    </span>
+                  </div>
+
+                  <p className="mt-2 text-xs leading-5 text-slate-600">{item.description}</p>
+
+                  <div className="mt-3">
+                    {item.isMultiline ? (
+                      <textarea
+                        value={draftValue}
+                        onChange={(event) =>
+                          handleRuntimeEnvDraftChange(item.key, event.target.value)
+                        }
+                        disabled={isRuntimeEnvLoading || itemBusy}
+                        className="min-h-32 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs leading-5 text-slate-900 outline-none ring-cyan-400 transition focus:ring disabled:cursor-not-allowed disabled:bg-slate-100"
+                      />
+                    ) : (
+                      <input
+                        value={draftValue}
+                        onChange={(event) =>
+                          handleRuntimeEnvDraftChange(item.key, event.target.value)
+                        }
+                        disabled={isRuntimeEnvLoading || itemBusy}
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none ring-cyan-400 transition focus:ring disabled:cursor-not-allowed disabled:bg-slate-100"
+                      />
+                    )}
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[11px] text-slate-500">
+                      Updated: {formatGeneratedAt(item.updatedAt || '')}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleResetRuntimeEnv(item)}
+                        disabled={isRuntimeEnvLoading || itemBusy}
+                        className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {resetBusy ? 'Resetting...' : 'Reset'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveRuntimeEnv(item)}
+                        disabled={isRuntimeEnvLoading || itemBusy || !isDirty}
+                        className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {saveBusy ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {runtimeEnvStatusText ? (
+            <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {runtimeEnvStatusText}
+            </p>
+          ) : null}
+
+          {runtimeEnvErrorText ? (
+            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {runtimeEnvErrorText}
+            </p>
+          ) : null}
         </div>
 
         <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
