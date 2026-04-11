@@ -76,65 +76,89 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-slate-100 via-zinc-50 to-slate-200 px-6 py-16">
-      <main className="w-full max-w-md rounded-3xl border border-slate-200 bg-white/90 p-8 shadow-lg backdrop-blur">
-        <p className="mb-3 inline-flex rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-white">
-          Admin Portal
-        </p>
+    <div className="flex min-h-screen items-center justify-center px-6 py-16 relative overflow-hidden">
+      {/* Background decorative elements */}
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -top-32 -right-32 h-80 w-80 rounded-full bg-indigo-600/10 blur-3xl" />
+        <div className="absolute -bottom-32 -left-32 h-80 w-80 rounded-full bg-violet-600/10 blur-3xl" />
+      </div>
 
-        <h1 className="text-3xl font-bold tracking-tight text-slate-900">Login Dashboard</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-600">
-          Masuk menggunakan akun admin untuk mengakses dashboard manajemen lead WA.
+      <main className="glass-card glow-accent relative w-full max-w-md rounded-3xl p-8">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600/20">
+            <svg className="h-5 w-5 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          </div>
+          <span className="rounded-full bg-indigo-600/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300">
+            Admin Portal
+          </span>
+        </div>
+
+        <h1 className="text-2xl font-bold tracking-tight text-white">Login Dashboard</h1>
+        <p className="mt-2 text-sm leading-6 text-zinc-400">
+          Masuk menggunakan akun admin untuk mengelola lead dan konfigurasi bot.
         </p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          <label className="block text-sm font-semibold text-slate-700" htmlFor="username">
-            Username
-          </label>
-          <input
-            id="username"
-            type="text"
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            autoComplete="username"
-            disabled={isSubmitting}
-            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none ring-slate-300 transition focus:ring"
-            required
-          />
+          <div>
+            <label className="mb-1.5 block text-sm font-semibold text-zinc-300" htmlFor="username">
+              Username
+            </label>
+            <input
+              id="username"
+              type="text"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              autoComplete="username"
+              disabled={isSubmitting}
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-800/80 px-4 py-3 text-sm text-white placeholder-zinc-500 outline-none transition focus:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+              required
+            />
+          </div>
 
-          <label className="block text-sm font-semibold text-slate-700" htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            autoComplete="current-password"
-            disabled={isSubmitting}
-            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none ring-slate-300 transition focus:ring"
-            required
-          />
+          <div>
+            <label className="mb-1.5 block text-sm font-semibold text-zinc-300" htmlFor="password">
+              Password
+            </label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="current-password"
+              disabled={isSubmitting}
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-800/80 px-4 py-3 text-sm text-white placeholder-zinc-500 outline-none transition focus:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+              required
+            />
+          </div>
 
           {errorText ? (
-            <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{errorText}</p>
+            <div className="flex items-center gap-2 rounded-xl bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-300">
+              <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
+              </svg>
+              {errorText}
+            </div>
           ) : null}
 
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+            className="group relative w-full overflow-hidden rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white transition-all hover:bg-indigo-500 hover:shadow-lg hover:shadow-indigo-500/25 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isSubmitting ? 'Memproses Login...' : 'Masuk ke Dashboard'}
+            <span className="relative z-10">{isSubmitting ? 'Memproses Login...' : 'Masuk ke Dashboard'}</span>
+            <div className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/10 to-transparent transition-transform group-hover:translate-x-full duration-700" />
           </button>
         </form>
 
-        <div className="mt-5 text-center text-sm text-slate-600">
+        <div className="mt-6 text-center">
           <Link
             href="/"
-            className="font-semibold text-slate-700 underline decoration-slate-300 underline-offset-4"
+            className="text-sm font-medium text-zinc-500 transition hover:text-indigo-400"
           >
-            Kembali ke Home
+            ← Kembali ke Home
           </Link>
         </div>
       </main>

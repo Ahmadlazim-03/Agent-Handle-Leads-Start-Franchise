@@ -42,9 +42,9 @@ export const runtime = 'nodejs';
 
 const AI_RESPONSE_DELAY_MS = 2000;
 const DUPLICATE_MESSAGE_TTL_MS = 10 * 60 * 1000;
-const MAX_MODEL_CONTEXT_MESSAGES = 8;
-const MAX_PRIMARY_RESPONSE_SENTENCES = 2;
-const MAX_REPLY_CHARACTER_LENGTH = 320;
+const MAX_MODEL_CONTEXT_MESSAGES = 20;
+const MAX_PRIMARY_RESPONSE_SENTENCES = 5;
+const MAX_REPLY_CHARACTER_LENGTH = 800;
 const processedMessageIds = new Map<string, number>();
 const activeChatRequests = new Set<string>();
 
@@ -1235,58 +1235,20 @@ function ensureSentenceEnding(content: string): string {
   return `${trimmed}.`;
 }
 
-function enforceFranchiseeReplyStyle(
-  content: string,
-  options: {
-    includeUrgency: boolean;
-    includeMeetingOffer: boolean;
-    meetingInviteText?: string;
-    meetingTimeQuestionText?: string;
-    empathyLine?: string;
-    requireQuestion: boolean;
-  }
-): string {
+function formatAIReply(content: string): string {
   let next = stripRolePrefixes(content);
-  if (!hasStructuredContent(next)) {
-    next = keepTwoShortSentences(next);
-  }
 
   if (!next) {
     next = 'Terima kasih sudah menghubungi StartFranchise.id.';
   }
 
-  next = ensurePreferredAddress(next);
-
-  if (options.empathyLine && !hasEmpathyMessage(next)) {
-    next = `${options.empathyLine} ${next}`;
-  }
-
-  if (options.includeUrgency && !hasUrgencyMessage(next)) {
-    next = `${next} ${DEFAULT_URGENCY_MESSAGE}`;
-  }
-
-  const meetingInviteText = options.meetingInviteText || REQUIRED_MEETING_INVITE;
-  const meetingTimeQuestionText =
-    options.meetingTimeQuestionText || REQUIRED_TIME_SLOT_QUESTION;
-
-  if (options.includeMeetingOffer && !hasMeetingInvite(next)) {
-    next = `${next} ${meetingInviteText}`;
-  }
-
-  if (options.includeMeetingOffer && !hasTimeSlotQuestion(next)) {
-    next = `${next} ${meetingTimeQuestionText}`;
-  }
-
+  // Keep formatting normalizations but don't truncate or inject content
   const normalized = normalizeMultilineWhitespace(
     addLineBreaksForStructuredText(
       formatPricingReplyAsList(normalizeNominalSpacing(next))
     )
   );
   const compacted = shortenReply(normalized);
-
-  if (options.requireQuestion && /\?|\b(kapan|berapa|apakah|boleh|prefer|lebih\s+nyaman)\b/i.test(compacted)) {
-    return ensureEndsWithQuestion(compacted);
-  }
 
   return ensureSentenceEnding(compacted);
 }
@@ -1527,59 +1489,8 @@ async function handleConversation(
     stateWithUserMessage.collectedData
   );
 
-  if (userMessageCount === 1) {
-    const introReply = enforceFranchiseeReplyStyle(
-      FIRST_CONTACT_INTRO_MESSAGE,
-      {
-        includeUrgency: false,
-        includeMeetingOffer: false,
-        requireQuestion: false,
-      }
-    );
-
-    await delay(AI_RESPONSE_DELAY_MS);
-
-    const introSent = await sendWhatsAppMessage(chatId, introReply);
-    if (!introSent) {
-      console.error(`Failed to send first-contact introduction to ${chatId}`);
-    }
-
-    const assistantState = addMessageToState(chatId, 'assistant', introReply);
-    if (!assistantState) {
-      console.error(
-        `Missing conversation state for ${chatId} when adding first-contact introduction`
-      );
-    }
-
-    return false;
-  }
-
-  if (userMessageCount === 2 && missingFieldsAfterUserMessage.length > 0) {
-    const guidanceReply = enforceFranchiseeReplyStyle(
-      buildPriorityLeadDataGuidance(missingFieldsAfterUserMessage),
-      {
-        includeUrgency: false,
-        includeMeetingOffer: false,
-        requireQuestion: false,
-      }
-    );
-
-    await delay(AI_RESPONSE_DELAY_MS);
-
-    const guidanceSent = await sendWhatsAppMessage(chatId, guidanceReply);
-    if (!guidanceSent) {
-      console.error(`Failed to send priority data guidance to ${chatId}`);
-    }
-
-    const assistantState = addMessageToState(chatId, 'assistant', guidanceReply);
-    if (!assistantState) {
-      console.error(
-        `Missing conversation state for ${chatId} when adding priority data guidance`
-      );
-    }
-
-    return false;
-  }
+  // All messages (including first contact) are now handled by AI dynamically
+  // The system prompt instructs Melisa to introduce herself on first message
 
   const meetingSchedule = extractMeetingSchedule(messageText);
   const isDealAndMeetingFinalized =
@@ -1699,8 +1610,8 @@ async function handleConversation(
       },
       ...recentConversationMessages,
     ],
-    temperature: 0.7,
-    max_tokens: 500,
+    temperature: 0.45,
+    max_tokens: 700,
   });
 
   const aiReply = response.choices[0]?.message?.content?.trim() || '';
@@ -1738,55 +1649,17 @@ async function handleConversation(
       : ensureTwoFieldFollowUp(aiReply, missingFieldsBeforeReply);
 
   const cleanReply = stripLeadPayload(aiReplyForDelivery);
-  const collectedFieldCount = countCollectedLeadFields(
-    stateWithUserMessage.collectedData
-  );
   const leadIsComplete = Boolean(finalLeadData);
   const completionReplyFallback =
     'Terima kasih, Kakak. Informasi Kakak sudah lengkap dan sudah kami catat. Kakak mau lihat proposal brand apa?';
-  const replySeed = leadIsComplete
-    ? completionReplyFallback
-    : completedFromStateFallback
+  const replySeed = leadIsComplete || completedFromStateFallback
     ? completionReplyFallback
     : cleanReply ||
       'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.';
-  const shouldOfferMeeting =
-    !leadIsComplete &&
-    collectedFieldCount >= 3 &&
-    hasHighIntentSignal(messageText) &&
-    !hasAssistantMentionedMeeting(stateWithUserMessage.messages);
-  const shouldIncludeUrgency =
-    !leadIsComplete &&
-    shouldOfferMeeting &&
-    !hasAssistantMentionedUrgency(stateWithUserMessage.messages);
-  const missingFieldsCurrent = getMissingLeadFields(stateWithUserMessage.collectedData);
-  const mandatoryDataReminder = !leadIsComplete
-    ? buildMissingDataReminder(missingFieldsCurrent)
-    : '';
-  const meetingInviteText = buildMeetingInviteText(
-    stateWithUserMessage.collectedData,
-    messageText
-  );
-  const meetingTimeQuestionText = buildMeetingTimeQuestion(
-    stateWithUserMessage.collectedData,
-    messageText
-  );
-  const empathyLine = buildEmpathyLine(messageText);
-  const replyWithReminder = mandatoryDataReminder
-    ? `${replySeed}\n\n${mandatoryDataReminder}`
-    : replySeed;
 
-  const outgoingReply = enforceFranchiseeReplyStyle(
-    replyWithReminder,
-    {
-      includeUrgency: shouldIncludeUrgency,
-      includeMeetingOffer: shouldOfferMeeting,
-      meetingInviteText,
-      meetingTimeQuestionText,
-      empathyLine,
-      requireQuestion: shouldOfferMeeting,
-    }
-  );
+  // AI now handles empathy, urgency, meeting offers via the improved system prompt
+  // We only do formatting cleanup (role prefix stripping, nominal spacing, structured text)
+  const outgoingReply = formatAIReply(replySeed);
 
   await delay(AI_RESPONSE_DELAY_MS);
 

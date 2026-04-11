@@ -225,26 +225,26 @@ function formatGeneratedAt(value: string): string {
 
 function statusBadgeClass(status: ManagedNumberStatus): string {
   if (status === 'proses_bot') {
-    return 'bg-amber-100 text-amber-700 border-amber-300';
+    return 'bg-amber-500/15 text-amber-300 border-amber-500/30';
   }
 
   if (status === 'selesai_berlabel') {
-    return 'bg-emerald-100 text-emerald-700 border-emerald-300';
+    return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
   }
 
-  return 'bg-slate-100 text-slate-700 border-slate-300';
+  return 'bg-zinc-700/50 text-zinc-300 border-zinc-600';
 }
 
 function integrationStatusBadgeClass(service: IntegrationService): string {
   if (service.connected) {
-    return 'bg-emerald-100 text-emerald-700';
+    return 'bg-emerald-500/15 text-emerald-300';
   }
 
   if (!service.configured) {
-    return 'bg-amber-100 text-amber-700';
+    return 'bg-amber-500/15 text-amber-300';
   }
 
-  return 'bg-rose-100 text-rose-700';
+  return 'bg-rose-500/15 text-rose-300';
 }
 
 function integrationStatusLabel(service: IntegrationService): string {
@@ -273,14 +273,14 @@ function runtimeEnvSourceLabel(source: RuntimeEnvSource): string {
 
 function logsLevelBadgeClass(level: DashboardLogLevel): string {
   if (level === 'error') {
-    return 'bg-rose-100 text-rose-700 border-rose-300';
+    return 'bg-rose-500/15 text-rose-300 border-rose-500/30';
   }
 
   if (level === 'warn') {
-    return 'bg-amber-100 text-amber-800 border-amber-300';
+    return 'bg-amber-500/15 text-amber-300 border-amber-500/30';
   }
 
-  return 'bg-cyan-100 text-cyan-700 border-cyan-300';
+  return 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30';
 }
 
 function logsLevelLabel(level: DashboardLogLevel): string {
@@ -1074,36 +1074,40 @@ export default function DashboardPage() {
     {
       label: 'Semua Nomor Pernah Chat',
       value: dashboard.summary.totalNumbers,
-      tone: 'from-cyan-500 to-blue-600',
+      tone: 'from-indigo-600/80 to-blue-600/80 border-indigo-500/30',
+      icon: '💬',
     },
     {
       label: 'Sedang Proses Bot',
       value: dashboard.summary.prosesBotCount,
-      tone: 'from-amber-500 to-orange-600',
+      tone: 'from-amber-600/80 to-orange-600/80 border-amber-500/30',
+      icon: '⚡',
     },
     {
       label: 'Selesai + Berlabel',
       value: dashboard.summary.selesaiBerlabelCount,
-      tone: 'from-emerald-500 to-teal-600',
+      tone: 'from-emerald-600/80 to-teal-600/80 border-emerald-500/30',
+      icon: '✅',
     },
     {
       label: 'Known Leads',
       value: dashboard.summary.knownCount,
-      tone: 'from-fuchsia-500 to-pink-600',
+      tone: 'from-fuchsia-600/80 to-pink-600/80 border-fuchsia-500/30',
+      icon: '👤',
     },
   ];
 
   return (
-    <div className="min-h-screen bg-linear-to-b from-slate-100 via-zinc-50 to-slate-200 text-slate-900">
+    <div className="min-h-screen text-zinc-100">
       <div className="mx-auto w-full max-w-7xl px-6 py-10">
-        <div className="mb-8 rounded-3xl border border-slate-200 bg-white/85 p-6 shadow-sm backdrop-blur">
+        <div className="glass-card mb-8 rounded-3xl p-6 glow-accent">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <p className="mb-2 inline-flex rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-white">
+              <span className="mb-2 inline-flex rounded-full bg-indigo-600/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300">
                 WA Lead Lifecycle
-              </p>
-              <h1 className="text-3xl font-bold tracking-tight">Dashboard Manajemen Nomor Chat</h1>
-              <p className="mt-2 text-sm text-slate-600">
+              </span>
+              <h1 className="text-3xl font-bold tracking-tight text-white">Dashboard Manajemen Nomor Chat</h1>
+              <p className="mt-2 text-sm text-zinc-400">
                 Tabel terpusat untuk nomor yang pernah chat, sedang diproses bot, atau sudah
                 selesai dan berlabel.
               </p>
@@ -1114,7 +1118,7 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => void handleBulkAction('clear_all_numbers')}
                 disabled={isBulkRunning || isRefreshing || isLoading || isLoggingOut}
-                className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busyActionKey === 'bulk:clear_all_numbers'
                   ? 'Menghapus...'
@@ -1124,7 +1128,7 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => void handleBulkAction('refetch_contacts')}
                 disabled={isBulkRunning || isRefreshing || isLoading || isLoggingOut}
-                className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-300 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busyActionKey === 'bulk:refetch_contacts'
                   ? 'Fetching...'
@@ -1132,7 +1136,7 @@ export default function DashboardPage() {
               </button>
               <Link
                 href="/"
-                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-900"
+                className="rounded-xl border border-zinc-700 bg-zinc-800/50 px-4 py-2 text-sm font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white"
               >
                 Kembali
               </Link>
@@ -1140,7 +1144,7 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => void handleLogout()}
                 disabled={isLoggingOut}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl border border-zinc-700 bg-zinc-800/50 px-4 py-2 text-sm font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isLoggingOut ? 'Logging out...' : 'Logout'}
               </button>
@@ -1166,7 +1170,7 @@ export default function DashboardPage() {
                   isLogsClearing ||
                   isLoggingOut
                 }
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isRefreshing ||
                 isPromptLoading ||
@@ -1179,14 +1183,14 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-600">
-            <span className="rounded-lg bg-slate-100 px-2 py-1">
+          <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+            <span className="rounded-lg bg-zinc-800 px-2 py-1">
               Data terakhir: {formatGeneratedAt(dashboard.generatedAt)}
             </span>
-            <span className="rounded-lg bg-slate-100 px-2 py-1">
+            <span className="rounded-lg bg-zinc-800 px-2 py-1">
               Label target: {dashboard.leadLabelName}
             </span>
-            <span className="rounded-lg bg-slate-100 px-2 py-1">
+            <span className="rounded-lg bg-zinc-800 px-2 py-1">
               Total berlabel: {dashboard.summary.labeledCount}
             </span>
           </div>
@@ -1196,36 +1200,39 @@ export default function DashboardPage() {
           {statCards.map((card) => (
             <div
               key={card.label}
-              className={`rounded-2xl bg-linear-to-br ${card.tone} p-5 text-white shadow-md`}
+              className={`rounded-2xl border bg-gradient-to-br ${card.tone} p-5 text-white shadow-lg`}
             >
-              <p className="text-xs uppercase tracking-[0.15em] text-white/80">{card.label}</p>
+              <div className="flex items-center justify-between">
+                <p className="text-xs uppercase tracking-[0.15em] text-white/70">{card.label}</p>
+                <span className="text-lg">{card.icon}</span>
+              </div>
               <p className="mt-2 text-3xl font-bold">{card.value}</p>
             </div>
           ))}
         </div>
 
-        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-6 glass-card rounded-2xl p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+              <p className="inline-flex rounded-full bg-indigo-600/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-indigo-300">
                 Integrations Health
               </p>
-              <h2 className="mt-2 text-xl font-semibold text-slate-900">
+              <h2 className="mt-2 text-xl font-semibold text-white">
                 Status Koneksi Layanan
               </h2>
-              <p className="mt-1 max-w-3xl text-sm text-slate-600">
+              <p className="mt-1 max-w-3xl text-sm text-zinc-400">
                 Cek koneksi real-time untuk Redis, WAHA, Telegram, dan Spreadsheet.
                 Gunakan panel ini untuk memastikan semua integrasi aktif sebelum run
                 bot production.
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-              <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1 font-semibold">
                 Terhubung: {integrations.filter((service) => service.connected).length}/
                 {integrations.length}
               </span>
-              <span className="rounded-lg bg-slate-100 px-2 py-1">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1">
                 Dicek: {formatGeneratedAt(integrationCheckedAt)}
               </span>
             </div>
@@ -1235,10 +1242,10 @@ export default function DashboardPage() {
             {integrations.map((service) => (
               <div
                 key={service.key}
-                className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+                className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-slate-900">{service.label}</p>
+                  <p className="text-sm font-semibold text-white">{service.label}</p>
                   <span
                     className={`rounded-full px-2 py-1 text-xs font-semibold ${integrationStatusBadgeClass(
                       service
@@ -1248,7 +1255,7 @@ export default function DashboardPage() {
                   </span>
                 </div>
                 <p className="mt-2 text-xs leading-5 text-slate-600">{service.message}</p>
-                <p className="mt-2 text-[11px] uppercase tracking-[0.12em] text-slate-500">
+                <p className="mt-2 text-[11px] uppercase tracking-[0.12em] text-zinc-500">
                   {service.latencyMs === null
                     ? 'Latency: -'
                     : `Latency: ${service.latencyMs} ms`}
@@ -1258,36 +1265,36 @@ export default function DashboardPage() {
           </div>
 
           {integrationErrorText ? (
-            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <p className="mt-3 rounded-xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-sm text-rose-300">
               {integrationErrorText}
             </p>
           ) : null}
         </div>
 
-        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-6 glass-card rounded-2xl p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+              <p className="inline-flex rounded-full bg-indigo-600/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-indigo-300">
                 Runtime Logs
               </p>
-              <h2 className="mt-2 text-xl font-semibold text-slate-900">Logs Aktivitas Bot</h2>
-              <p className="mt-1 max-w-3xl text-sm text-slate-600">
+              <h2 className="mt-2 text-xl font-semibold text-white">Logs Aktivitas Bot</h2>
+              <p className="mt-1 max-w-3xl text-sm text-zinc-400">
                 Monitoring event webhook, notifikasi Telegram, dan penulisan Spreadsheet
                 secara real-time untuk mempercepat debugging production.
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-              <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1 font-semibold">
                 Total: {dashboardLogs.length}
               </span>
-              <span className="rounded-lg bg-rose-100 px-2 py-1 font-semibold text-rose-700">
+              <span className="rounded-lg bg-rose-500/15 px-2 py-1 font-semibold text-rose-300">
                 Error: {logErrorCount}
               </span>
-              <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1 font-semibold">
                 Storage: {logStorageMode === 'redis' ? 'Redis' : 'Memory'}
               </span>
-              <span className="rounded-lg bg-slate-100 px-2 py-1">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1">
                 Dicek: {formatGeneratedAt(logCheckedAt)}
               </span>
             </div>
@@ -1298,13 +1305,13 @@ export default function DashboardPage() {
               value={logSearchQuery}
               onChange={(event) => setLogSearchQuery(event.target.value)}
               placeholder="Cari source, message, atau detail..."
-              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 transition focus:ring md:col-span-2"
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 outline-none ring-indigo-500/40 transition focus:ring md:col-span-2"
             />
 
             <select
               value={logLevelFilter}
               onChange={(event) => setLogLevelFilter(event.target.value as LogsLevelFilter)}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none ring-cyan-400 transition focus:ring"
+              className="rounded-xl border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-200 outline-none ring-indigo-500/40 transition focus:ring"
             >
               <option value="all">Semua Level</option>
               <option value="error">Error</option>
@@ -1317,7 +1324,7 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => void loadDashboardLogs(false)}
                 disabled={isLogLoading || isLogsClearing}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm font-semibold text-zinc-300 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isLogLoading ? 'Loading...' : 'Refresh Logs'}
               </button>
@@ -1333,23 +1340,23 @@ export default function DashboardPage() {
           </div>
 
           {logStatusText ? (
-            <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            <p className="mt-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-sm text-emerald-300">
               {logStatusText}
             </p>
           ) : null}
 
           {logErrorText ? (
-            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <p className="mt-3 rounded-xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-sm text-rose-300">
               {logErrorText}
             </p>
           ) : null}
 
-          <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-slate-950">
+          <div className="mt-4 overflow-hidden rounded-xl border border-zinc-800 bg-slate-950">
             <div className="max-h-[440px] overflow-y-auto">
               {isLogLoading ? (
-                <p className="px-4 py-10 text-center text-sm text-slate-300">Memuat logs...</p>
+                <p className="px-4 py-10 text-center text-sm text-zinc-400">Memuat logs...</p>
               ) : filteredLogs.length === 0 ? (
-                <p className="px-4 py-10 text-center text-sm text-slate-400">
+                <p className="px-4 py-10 text-center text-sm text-zinc-500">
                   Tidak ada log yang cocok dengan filter saat ini.
                 </p>
               ) : (
@@ -1367,7 +1374,7 @@ export default function DashboardPage() {
                         <span className="rounded-full bg-slate-800 px-2 py-1 font-semibold uppercase tracking-wide text-slate-200">
                           {entry.source}
                         </span>
-                        <span className="text-slate-400">{formatGeneratedAt(entry.createdAt)}</span>
+                        <span className="text-zinc-500">{formatGeneratedAt(entry.createdAt)}</span>
                       </div>
 
                       <p className="mt-2 font-mono text-[13px] leading-6 text-slate-100">
@@ -1376,10 +1383,10 @@ export default function DashboardPage() {
 
                       {entry.details ? (
                         <details className="mt-2 rounded-lg border border-slate-800 bg-slate-900/80 p-2">
-                          <summary className="cursor-pointer text-xs font-semibold text-slate-300">
+                          <summary className="cursor-pointer text-xs font-semibold text-zinc-400">
                             Detail
                           </summary>
-                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-slate-300">
+                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-zinc-400">
                             {entry.details}
                           </pre>
                         </details>
@@ -1392,34 +1399,34 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-6 glass-card rounded-2xl p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+              <p className="inline-flex rounded-full bg-indigo-600/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-indigo-300">
                 AI Prompt Editor
               </p>
-              <h2 className="mt-2 text-xl font-semibold text-slate-900">Edit Prompt Runtime AI</h2>
-              <p className="mt-1 max-w-3xl text-sm text-slate-600">
+              <h2 className="mt-2 text-xl font-semibold text-white">Edit Prompt Runtime AI</h2>
+              <p className="mt-1 max-w-3xl text-sm text-zinc-400">
                 Perubahan prompt di panel ini hanya mempengaruhi gaya dan strategi balasan AI.
                 Core logic seperti penyimpanan spreadsheet, notifikasi Telegram, labeling WAHA,
                 dan lifecycle lead tetap menggunakan flow existing.
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
               <span
                 className={`rounded-lg px-2 py-1 font-semibold ${
                   promptSource === 'redis-custom'
                     ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-slate-100 text-slate-700'
+                    : 'bg-zinc-800 text-zinc-300'
                 }`}
               >
                 Source: {promptSource === 'redis-custom' ? 'Custom (Redis)' : 'Default'}
               </span>
-              <span className="rounded-lg bg-slate-100 px-2 py-1">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1">
                 Updated: {formatGeneratedAt(promptUpdatedAt || '')}
               </span>
-              <span className="rounded-lg bg-slate-100 px-2 py-1">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1">
                 Panjang: {promptDraft.length} karakter
               </span>
             </div>
@@ -1431,7 +1438,7 @@ export default function DashboardPage() {
               onChange={(event) => setPromptDraft(event.target.value)}
               placeholder="Masukkan prompt runtime AI di sini..."
               disabled={isPromptLoading || isPromptSaving}
-              className="min-h-70 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 font-mono text-sm leading-6 text-slate-900 outline-none ring-cyan-400 transition focus:ring disabled:cursor-not-allowed disabled:bg-slate-50"
+              className="min-h-70 w-full rounded-xl border border-zinc-700 bg-zinc-800/80 px-4 py-3 font-mono text-sm leading-6 text-white outline-none ring-indigo-500/40 transition focus:ring disabled:cursor-not-allowed disabled:bg-zinc-900/50"
             />
           </div>
 
@@ -1441,7 +1448,7 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => void loadPromptConfig(true)}
                 disabled={isPromptLoading || isPromptSaving}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl border border-zinc-700 bg-zinc-800/50 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Muat Ulang Prompt
               </button>
@@ -1449,7 +1456,7 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => setPromptDraft(activePrompt)}
                 disabled={isPromptLoading || isPromptSaving || !isPromptDirty}
-                className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-300 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Reset Draft
               </button>
@@ -1457,7 +1464,7 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => void handleResetPromptToDefault()}
                 disabled={isPromptLoading || isPromptSaving}
-                className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isPromptSaving ? 'Memproses...' : 'Reset ke Default'}
               </button>
@@ -1467,57 +1474,57 @@ export default function DashboardPage() {
               type="button"
               onClick={() => void handleSavePrompt()}
               disabled={isPromptLoading || isPromptSaving || !isPromptDirty}
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isPromptSaving ? 'Menyimpan...' : 'Simpan Prompt'}
             </button>
           </div>
 
           {promptStatusText ? (
-            <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            <p className="mt-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-sm text-emerald-300">
               {promptStatusText}
             </p>
           ) : null}
 
           {promptErrorText ? (
-            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <p className="mt-3 rounded-xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-sm text-rose-300">
               {promptErrorText}
             </p>
           ) : null}
 
           {!defaultPrompt ? null : (
-            <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <summary className="cursor-pointer text-sm font-semibold text-slate-700">
+            <details className="mt-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">
+              <summary className="cursor-pointer text-sm font-semibold text-zinc-300">
                 Lihat Prompt Default
               </summary>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs leading-6 text-slate-700">
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs leading-6 text-zinc-300">
                 {defaultPrompt}
               </pre>
             </details>
           )}
         </div>
 
-        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-6 glass-card rounded-2xl p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+              <p className="inline-flex rounded-full bg-indigo-600/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-indigo-300">
                 Runtime Env Editor
               </p>
-              <h2 className="mt-2 text-xl font-semibold text-slate-900">
+              <h2 className="mt-2 text-xl font-semibold text-white">
                 Edit Konfigurasi .env Secara Live
               </h2>
-              <p className="mt-1 max-w-3xl text-sm text-slate-600">
+              <p className="mt-1 max-w-3xl text-sm text-zinc-400">
                 Panel ini menyimpan override config di Redis, sehingga perubahan key dapat
                 langsung dipakai runtime tanpa deploy ulang. Saat reset, nilai kembali ke
                 fallback ENV atau default.
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-              <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1 font-semibold">
                 Configured: {runtimeEnvConnectedCount}/{runtimeEnvItems.length}
               </span>
-              <span className="rounded-lg bg-slate-100 px-2 py-1">
+              <span className="rounded-lg bg-zinc-800 px-2 py-1">
                 Dicek: {formatGeneratedAt(runtimeEnvCheckedAt)}
               </span>
             </div>
@@ -1534,12 +1541,12 @@ export default function DashboardPage() {
               return (
                 <div
                   key={item.key}
-                  className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+                  className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <p className="text-sm font-semibold text-slate-900">{item.label}</p>
-                      <p className="text-xs text-slate-500">{item.key}</p>
+                      <p className="text-sm font-semibold text-white">{item.label}</p>
+                      <p className="text-xs text-zinc-500">{item.key}</p>
                     </div>
                     <span
                       className={`rounded-full px-2 py-1 text-xs font-semibold ${
@@ -1564,7 +1571,7 @@ export default function DashboardPage() {
                           handleRuntimeEnvDraftChange(item.key, event.target.value)
                         }
                         disabled={isRuntimeEnvLoading || itemBusy}
-                        className="min-h-32 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs leading-5 text-slate-900 outline-none ring-cyan-400 transition focus:ring disabled:cursor-not-allowed disabled:bg-slate-100"
+                        className="min-h-32 w-full rounded-xl border border-zinc-700 bg-zinc-800/80 px-3 py-2 font-mono text-xs leading-5 text-white outline-none ring-indigo-500/40 transition focus:ring disabled:cursor-not-allowed disabled:bg-zinc-800"
                       />
                     ) : (
                       <input
@@ -1573,13 +1580,13 @@ export default function DashboardPage() {
                           handleRuntimeEnvDraftChange(item.key, event.target.value)
                         }
                         disabled={isRuntimeEnvLoading || itemBusy}
-                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none ring-cyan-400 transition focus:ring disabled:cursor-not-allowed disabled:bg-slate-100"
+                        className="w-full rounded-xl border border-zinc-700 bg-zinc-800/80 px-3 py-2 font-mono text-xs text-white outline-none ring-indigo-500/40 transition focus:ring disabled:cursor-not-allowed disabled:bg-zinc-800"
                       />
                     )}
                   </div>
 
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-[11px] text-slate-500">
+                    <p className="text-[11px] text-zinc-500">
                       Updated: {formatGeneratedAt(item.updatedAt || '')}
                     </p>
                     <div className="flex items-center gap-2">
@@ -1607,31 +1614,31 @@ export default function DashboardPage() {
           </div>
 
           {runtimeEnvStatusText ? (
-            <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            <p className="mt-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-sm text-emerald-300">
               {runtimeEnvStatusText}
             </p>
           ) : null}
 
           {runtimeEnvErrorText ? (
-            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <p className="mt-3 rounded-xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-sm text-rose-300">
               {runtimeEnvErrorText}
             </p>
           ) : null}
         </div>
 
-        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-6 glass-card rounded-2xl p-4">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
             <input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder="Search nomor, nama, chatId, label..."
-              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-cyan-400 transition focus:ring md:col-span-2"
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-800/80 px-4 py-2 text-sm text-zinc-100 outline-none ring-indigo-500/40 transition focus:ring md:col-span-2"
             />
 
             <select
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none ring-cyan-400 transition focus:ring"
+              className="rounded-xl border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-200 outline-none ring-indigo-500/40 transition focus:ring"
             >
               <option value="all">Filter Status: Semua</option>
               {dashboard.statusOptions.map((option) => (
@@ -1644,7 +1651,7 @@ export default function DashboardPage() {
             <select
               value={sourceFilter}
               onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none ring-cyan-400 transition focus:ring"
+              className="rounded-xl border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-200 outline-none ring-indigo-500/40 transition focus:ring"
             >
               <option value="all">Filter Sumber: Semua</option>
               <option value="incoming">Incoming Redis</option>
@@ -1655,52 +1662,52 @@ export default function DashboardPage() {
             </select>
           </div>
 
-          <div className="mt-3 text-xs text-slate-600">
+          <div className="mt-3 text-xs text-zinc-400">
             Menampilkan {filteredRows.length} dari {dashboard.summary.totalNumbers} nomor.
           </div>
 
           {statusText ? (
-            <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            <p className="mt-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-sm text-emerald-300">
               {statusText}
             </p>
           ) : null}
 
           {errorText ? (
-            <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{errorText}</p>
+            <p className="mt-3 rounded-xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-sm text-rose-300">{errorText}</p>
           ) : null}
 
           {dashboard.diagnostics.chatsError ? (
-            <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <p className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-300">
               WAHA chats warning: {dashboard.diagnostics.chatsError}
             </p>
           ) : null}
 
           {dashboard.diagnostics.contactsError ? (
-            <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <p className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-300">
               WAHA contacts warning: {dashboard.diagnostics.contactsError}
             </p>
           ) : null}
 
           {dashboard.diagnostics.labelsError ? (
-            <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <p className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-300">
               WAHA labels warning: {dashboard.diagnostics.labelsError}
             </p>
           ) : null}
 
           {dashboard.diagnostics.labelChatsError ? (
-            <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <p className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-300">
               WAHA label-chats warning: {dashboard.diagnostics.labelChatsError}
             </p>
           ) : null}
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="glass-card rounded-2xl p-4">
           <h2 className="mb-3 text-lg font-semibold">Tabel Lifecycle Nomor</h2>
 
           <div className="overflow-x-auto">
             <table className="min-w-full border-collapse text-sm">
               <thead>
-                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-zinc-800 text-left text-xs uppercase tracking-widest text-zinc-500">
                   <th className="px-3 py-3">Nomor</th>
                   <th className="px-3 py-3">Kontak</th>
                   <th className="px-3 py-3">Chat IDs</th>
@@ -1715,13 +1722,13 @@ export default function DashboardPage() {
               <tbody>
                 {isLoading ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-10 text-center text-slate-500">
+                    <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
                       Memuat data nomor...
                     </td>
                   </tr>
                 ) : filteredRows.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-10 text-center text-slate-500">
+                    <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
                       Tidak ada data yang cocok dengan filter.
                     </td>
                   </tr>
@@ -1732,16 +1739,16 @@ export default function DashboardPage() {
                     const unmarkBusy = busyActionKey === `unmark_known:${row.phoneNumber}`;
 
                     return (
-                      <tr key={row.phoneNumber} className="border-b border-slate-100 align-top">
-                        <td className="px-3 py-3 font-semibold text-slate-800">{row.phoneNumber}</td>
-                        <td className="px-3 py-3 text-xs text-slate-700">
+                      <tr key={row.phoneNumber} className="border-b border-zinc-800/50 align-top">
+                        <td className="px-3 py-3 font-semibold text-zinc-200">{row.phoneNumber}</td>
+                        <td className="px-3 py-3 text-xs text-zinc-300">
                           <div className="font-medium">{row.displayName || '-'}</div>
-                          <div className="text-slate-500">{row.pushName || '-'}</div>
+                          <div className="text-zinc-500">{row.pushName || '-'}</div>
                         </td>
-                        <td className="px-3 py-3 text-xs text-slate-600">
+                        <td className="px-3 py-3 text-xs text-zinc-400">
                           {row.chatIds.length ? row.chatIds.join(', ') : '-'}
                         </td>
-                        <td className="px-3 py-3 text-xs text-slate-700">
+                        <td className="px-3 py-3 text-xs text-zinc-300">
                           {row.labelNames.length ? row.labelNames.join(', ') : '-'}
                         </td>
                         <td className="px-3 py-3">
@@ -1768,7 +1775,7 @@ export default function DashboardPage() {
                               onChange={(event) =>
                                 void handleStatusOverride(row.phoneNumber, event.target.value)
                               }
-                              className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800"
+                              className="rounded-lg border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-xs text-zinc-200"
                             >
                               <option value="auto">Auto</option>
                               {dashboard.statusOptions.map((option) => (
@@ -1779,13 +1786,13 @@ export default function DashboardPage() {
                             </select>
                           </div>
                         </td>
-                        <td className="px-3 py-3 text-xs text-slate-600">
+                        <td className="px-3 py-3 text-xs text-zinc-400">
                           <div>{row.isIncoming ? 'Incoming' : '-'}</div>
                           <div>{row.isKnown ? 'Known' : 'Not Known'}</div>
                           <div>{row.fromWahaChat ? 'WAHA Chat' : '-'}</div>
                           <div>{row.isInConversation ? 'In Progress' : 'Idle'}</div>
                         </td>
-                        <td className="px-3 py-3 text-xs text-slate-600">
+                        <td className="px-3 py-3 text-xs text-zinc-400">
                           {formatGeneratedAt(row.lastActivityAt || '')}
                         </td>
                         <td className="px-3 py-3 text-right">
@@ -1817,7 +1824,7 @@ export default function DashboardPage() {
                               href={`https://wa.me/${row.phoneNumber}`}
                               target="_blank"
                               rel="noreferrer"
-                              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-center text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                              className="rounded-lg border border-zinc-700 bg-zinc-800/80 px-3 py-1.5 text-center text-xs font-semibold text-zinc-300 transition hover:bg-zinc-800"
                             >
                               Buka WA
                             </a>
