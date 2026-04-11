@@ -69,11 +69,11 @@ const LEAD_FIELDS: LeadField[] = [
 ];
 
 const LEAD_FIELD_LABELS: Record<LeadField, string> = {
-  sumberInfo: 'sumber informasi',
-  biodata: 'biodata (nama + domisili)',
-  bidangUsaha: 'bidang usaha',
-  budget: 'budget investasi',
-  rencanaMulai: 'rencana mulai',
+  sumberInfo: 'Sumber informasi mengenai kami',
+  biodata: 'Nama dan domisili',
+  bidangUsaha: 'Bidang usaha yang sedang/ingin dijalankan',
+  budget: 'Budget investasi',
+  rencanaMulai: 'Rencana waktu memulai usaha',
 };
 
 const BUDGET_AMBIGUOUS_TERMS = [
@@ -93,6 +93,12 @@ const REQUIRED_TIME_SLOT_QUESTION =
   'Kakak lebih nyaman jam 10.00 atau 14.00?';
 const DEFAULT_URGENCY_MESSAGE =
   'Promo diskon 10% masih aktif dan kuota di kota Kakak terbatas.';
+const FIRST_CONTACT_INTRO_MESSAGE =
+  'Perkenalkan Kakak, saya Melisa dari StartFranchise.id, siap bantu konsultasi franchise yang paling cocok untuk Kakak.';
+const PRIORITY_DATA_GUIDANCE_OPENING =
+  'Untuk melanjutkan, saya perlu data lengkap Kakak:';
+const PRIORITY_DATA_GUIDANCE_CLOSING =
+  'Setelah data tersebut lengkap, kami bisa bantu tindak lanjut lebih lanjut.';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -867,10 +873,24 @@ function buildMissingDataReminder(missingFields: LeadField[]): string {
     return '';
   }
 
-  const labels = missingFields.map((field) => LEAD_FIELD_LABELS[field]);
-  const listText = labels.join(', ');
+  const lines = [
+    PRIORITY_DATA_GUIDANCE_OPENING,
+    ...missingFields.map((field) => `- ${LEAD_FIELD_LABELS[field]}`),
+    PRIORITY_DATA_GUIDANCE_CLOSING,
+  ];
 
-  return `Agar data Kakak benar-benar lengkap untuk tindak lanjut dan rekomendasi terbaik, mohon lengkapi: ${listText}.`;
+  return lines.join('\n');
+}
+
+function buildPriorityLeadDataGuidance(missingFields: LeadField[]): string {
+  const targetFields = missingFields.length > 0 ? missingFields : LEAD_FIELDS;
+  const lines = [
+    'Agar saya bisa bantu rekomendasi franchise dengan tepat, mohon isi data berikut terlebih dahulu:',
+    ...targetFields.map((field) => `- ${LEAD_FIELD_LABELS[field]}`),
+    'Kakak bisa kirim dalam satu pesan dengan format tersebut agar proses lebih cepat.',
+  ];
+
+  return lines.join('\n');
 }
 
 function asksForBudget(content: string): boolean {
@@ -1085,6 +1105,10 @@ function keepTwoShortSentences(content: string): string {
   return chunks.slice(0, MAX_PRIMARY_RESPONSE_SENTENCES).join(' ');
 }
 
+function hasStructuredContent(content: string): boolean {
+  return /\n\s*[-•▪◦]|:\s*-\s*|(?:^|\s)-\s+(?=[A-Za-z0-9])/.test(content);
+}
+
 function addLineBreaksForStructuredText(content: string): string {
   return content
     .replace(/\s+(\d{1,2}\.)\s+/g, '\n$1 ')
@@ -1222,7 +1246,10 @@ function enforceFranchiseeReplyStyle(
     requireQuestion: boolean;
   }
 ): string {
-  let next = keepTwoShortSentences(stripRolePrefixes(content));
+  let next = stripRolePrefixes(content);
+  if (!hasStructuredContent(next)) {
+    next = keepTwoShortSentences(next);
+  }
 
   if (!next) {
     next = 'Terima kasih sudah menghubungi StartFranchise.id.';
@@ -1257,7 +1284,7 @@ function enforceFranchiseeReplyStyle(
   );
   const compacted = shortenReply(normalized);
 
-  if (options.requireQuestion) {
+  if (options.requireQuestion && /\?|\b(kapan|berapa|apakah|boleh|prefer|lebih\s+nyaman)\b/i.test(compacted)) {
     return ensureEndsWithQuestion(compacted);
   }
 
@@ -1493,6 +1520,67 @@ async function handleConversation(
   );
   updateConversationState(chatId, stateWithUserMessage);
 
+  const userMessageCount = stateWithUserMessage.messages.filter(
+    (message) => message.role === 'user'
+  ).length;
+  const missingFieldsAfterUserMessage = getMissingLeadFields(
+    stateWithUserMessage.collectedData
+  );
+
+  if (userMessageCount === 1) {
+    const introReply = enforceFranchiseeReplyStyle(
+      FIRST_CONTACT_INTRO_MESSAGE,
+      {
+        includeUrgency: false,
+        includeMeetingOffer: false,
+        requireQuestion: false,
+      }
+    );
+
+    await delay(AI_RESPONSE_DELAY_MS);
+
+    const introSent = await sendWhatsAppMessage(chatId, introReply);
+    if (!introSent) {
+      console.error(`Failed to send first-contact introduction to ${chatId}`);
+    }
+
+    const assistantState = addMessageToState(chatId, 'assistant', introReply);
+    if (!assistantState) {
+      console.error(
+        `Missing conversation state for ${chatId} when adding first-contact introduction`
+      );
+    }
+
+    return false;
+  }
+
+  if (userMessageCount === 2 && missingFieldsAfterUserMessage.length > 0) {
+    const guidanceReply = enforceFranchiseeReplyStyle(
+      buildPriorityLeadDataGuidance(missingFieldsAfterUserMessage),
+      {
+        includeUrgency: false,
+        includeMeetingOffer: false,
+        requireQuestion: false,
+      }
+    );
+
+    await delay(AI_RESPONSE_DELAY_MS);
+
+    const guidanceSent = await sendWhatsAppMessage(chatId, guidanceReply);
+    if (!guidanceSent) {
+      console.error(`Failed to send priority data guidance to ${chatId}`);
+    }
+
+    const assistantState = addMessageToState(chatId, 'assistant', guidanceReply);
+    if (!assistantState) {
+      console.error(
+        `Missing conversation state for ${chatId} when adding priority data guidance`
+      );
+    }
+
+    return false;
+  }
+
   const meetingSchedule = extractMeetingSchedule(messageText);
   const isDealAndMeetingFinalized =
     hasDealSignal(messageText) && meetingSchedule.length > 0;
@@ -1696,7 +1784,7 @@ async function handleConversation(
       meetingInviteText,
       meetingTimeQuestionText,
       empathyLine,
-      requireQuestion: missingFieldsCurrent.length > 0 || shouldOfferMeeting,
+      requireQuestion: shouldOfferMeeting,
     }
   );
 
