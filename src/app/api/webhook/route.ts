@@ -43,9 +43,13 @@ export const runtime = 'nodejs';
 const AI_RESPONSE_DELAY_MS = 2000;
 const DUPLICATE_MESSAGE_TTL_MS = 10 * 60 * 1000;
 const MAX_MODEL_CONTEXT_MESSAGES = 8;
-const MAX_PRIMARY_RESPONSE_SENTENCES = 3;
+const MAX_PRIMARY_RESPONSE_SENTENCES = 2;
+const MAX_REPLY_CHARACTER_LENGTH = 320;
 const processedMessageIds = new Map<string, number>();
 const activeChatRequests = new Set<string>();
+
+const SURABAYA_OFFLINE_MEETING_ADDRESS =
+  'Ciputra World, Vieloft SOHO, Lt. 12 Unit 1202-1203, Jl. Mayjen Sungkono No.89, Gunung Sari, Dukuhpakis, Surabaya, East Java 60224';
 
 type LeadField =
   | 'sumberInfo'
@@ -64,6 +68,14 @@ const LEAD_FIELDS: LeadField[] = [
   'rencanaMulai',
 ];
 
+const LEAD_FIELD_LABELS: Record<LeadField, string> = {
+  sumberInfo: 'sumber informasi',
+  biodata: 'biodata (nama + domisili)',
+  bidangUsaha: 'bidang usaha',
+  budget: 'budget investasi',
+  rencanaMulai: 'rencana mulai',
+};
+
 const BUDGET_AMBIGUOUS_TERMS = [
   'belum tahu',
   'belum tau',
@@ -76,7 +88,7 @@ const BUDGET_AMBIGUOUS_TERMS = [
 ];
 
 const REQUIRED_MEETING_INVITE =
-  'Kakak, boleh lanjut meeting singkat 5-10 menit dengan Business Manager StartFranchise.id?';
+  'Kakak, untuk pembahasan lebih detail kita bisa jadwalkan meeting singkat 5-10 menit dengan Business Manager StartFranchise.id.';
 const REQUIRED_TIME_SLOT_QUESTION =
   'Kakak lebih nyaman jam 10.00 atau 14.00?';
 const DEFAULT_URGENCY_MESSAGE =
@@ -818,11 +830,47 @@ function mergeCollectedData(
   return current;
 }
 
+function isBiodataFieldComplete(value: string): boolean {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) {
+    return false;
+  }
+
+  const segmented = normalized
+    .split('-')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (segmented.length >= 2) {
+    return true;
+  }
+
+  return /\b(dari|asal|domisili)\b/i.test(normalized) && normalized.split(' ').length >= 3;
+}
+
 function getMissingLeadFields(collectedData: Record<string, string>): LeadField[] {
   return LEAD_FIELDS.filter((field) => {
     const value = collectedData[field];
-    return !value || value.trim().length === 0;
+    if (!value || value.trim().length === 0) {
+      return true;
+    }
+
+    if (field === 'biodata') {
+      return !isBiodataFieldComplete(value);
+    }
+
+    return false;
   });
+}
+
+function buildMissingDataReminder(missingFields: LeadField[]): string {
+  if (missingFields.length === 0) {
+    return '';
+  }
+
+  const labels = missingFields.map((field) => LEAD_FIELD_LABELS[field]);
+  const listText = labels.join(', ');
+
+  return `Agar data Kakak benar-benar lengkap untuk tindak lanjut dan rekomendasi terbaik, mohon lengkapi: ${listText}.`;
 }
 
 function asksForBudget(content: string): boolean {
@@ -875,7 +923,7 @@ function buildEmpathyLine(userMessage: string): string {
   }
 
   if (/tertarik|semangat|penasaran|mantap|bagus|suka|cocok/i.test(normalized)) {
-    return 'Senang dengar antusias Kakak.';
+    return 'Terima kasih, informasinya sangat membantu.';
   }
 
   if (/belum\s+tahu|masih\s+lihat|masih\s+bingung|masih\s+pertimbangkan/i.test(normalized)) {
@@ -883,6 +931,37 @@ function buildEmpathyLine(userMessage: string): string {
   }
 
   return '';
+}
+
+function isSurabayaLeadContext(
+  collectedData: Record<string, string>,
+  latestMessage: string
+): boolean {
+  const biodata = normalizeWhitespace(collectedData.biodata || '').toLowerCase();
+  const message = normalizeWhitespace(latestMessage || '').toLowerCase();
+  return /\bsurabaya\b/i.test(biodata) || /\bsurabaya\b/i.test(message);
+}
+
+function buildMeetingInviteText(
+  collectedData: Record<string, string>,
+  latestMessage: string
+): string {
+  if (isSurabayaLeadContext(collectedData, latestMessage)) {
+    return `${REQUIRED_MEETING_INVITE} Jika Kakak di area Surabaya, meeting bisa online atau offline. Untuk offline bisa di ${SURABAYA_OFFLINE_MEETING_ADDRESS}.`;
+  }
+
+  return REQUIRED_MEETING_INVITE;
+}
+
+function buildMeetingTimeQuestion(
+  collectedData: Record<string, string>,
+  latestMessage: string
+): string {
+  if (isSurabayaLeadContext(collectedData, latestMessage)) {
+    return 'Kakak prefer meeting online atau offline, dan lebih nyaman jadwal jam 10.00 atau 14.00?';
+  }
+
+  return REQUIRED_TIME_SLOT_QUESTION;
 }
 
 function hasHighIntentSignal(content: string): boolean {
@@ -939,6 +1018,28 @@ function extractMeetingSchedule(content: string): string {
     return `${dateHint ? `${dateHint} ` : ''}jam 14.00`.trim();
   }
 
+  const explicitClockMatch = normalized.match(/\b(\d{1,2})[:.](\d{2})\b/);
+  if (explicitClockMatch) {
+    const hour = Number(explicitClockMatch[1]);
+    const minute = Number(explicitClockMatch[2]);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      const hourText = String(hour).padStart(2, '0');
+      const minuteText = String(minute).padStart(2, '0');
+      return `${dateHint ? `${dateHint} ` : ''}jam ${hourText}.${minuteText}`.trim();
+    }
+  }
+
+  const jamPatternMatch = normalized.match(/\b(?:jam|pukul)\s*(\d{1,2})(?:[:.](\d{2}))?\b/);
+  if (jamPatternMatch) {
+    const hour = Number(jamPatternMatch[1]);
+    const minute = Number(jamPatternMatch[2] || '00');
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      const hourText = String(hour).padStart(2, '0');
+      const minuteText = String(minute).padStart(2, '0');
+      return `${dateHint ? `${dateHint} ` : ''}jam ${hourText}.${minuteText}`.trim();
+    }
+  }
+
   return dateHint || '';
 }
 
@@ -984,6 +1085,89 @@ function keepTwoShortSentences(content: string): string {
   return chunks.slice(0, MAX_PRIMARY_RESPONSE_SENTENCES).join(' ');
 }
 
+function addLineBreaksForStructuredText(content: string): string {
+  return content
+    .replace(/\s+(\d{1,2}\.)\s+/g, '\n$1 ')
+    .replace(/\s+([•▪◦])\s+/g, '\n$1 ')
+    .replace(/\s+-\s+(?=[A-Za-z0-9])/g, '\n- ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function normalizeMultilineWhitespace(content: string): string {
+  return content
+    .split('\n')
+    .map((line) => normalizeWhitespace(line))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function normalizeNominalSpacing(content: string): string {
+  let next = content
+    .replace(/\bRp\s*\.\s*/gi, 'Rp')
+    .replace(/\bRp\s+/gi, 'Rp');
+
+  let previous = '';
+  while (previous !== next) {
+    previous = next;
+    next = next.replace(/(\d)\s*([.,])\s*(\d)/g, '$1$2$3');
+  }
+
+  return next;
+}
+
+function formatPricingReplyAsList(content: string): string {
+  const normalized = normalizeNominalSpacing(content);
+  const hasPricingContext = /\b(harga|bep|break\s*even|investasi|modal|rp)\b/i.test(
+    normalized
+  );
+
+  if (!hasPricingContext || /\n\s*[-•▪◦]|\n\s*\d+\./.test(normalized)) {
+    return normalized;
+  }
+
+  const brandMatch = normalized.match(
+    /\b(?:franchise|kemitraan|partnership)\s+[A-Za-z0-9&' .-]{2,90}/i
+  );
+  const priceMatch = normalized.match(/\bRp\s*\.?\s*[0-9][0-9.,\s]*/i);
+  const bepMatch = normalized.match(
+    /\b(?:BEP|Break\s*Even\s*Point)\b[^0-9]{0,16}([0-9]{1,2}\s*[-–]\s*[0-9]{1,2}\s*bulan|[0-9]{1,2}\s*bulan)/i
+  );
+
+  if (!priceMatch && !bepMatch) {
+    return normalized;
+  }
+
+  const lines: string[] = ['Kakak, berikut rincian informasinya:'];
+  if (brandMatch?.[0]) {
+    lines.push(`- Brand: ${normalizeWhitespace(brandMatch[0])}`);
+  }
+
+  if (priceMatch?.[0]) {
+    lines.push(`- Harga: ${normalizeWhitespace(normalizeNominalSpacing(priceMatch[0]))}`);
+  }
+
+  if (bepMatch?.[1]) {
+    lines.push(`- BEP: ${normalizeWhitespace(bepMatch[1])}`);
+  }
+
+  return lines.join('\n');
+}
+
+function shortenReply(content: string): string {
+  if (content.length <= MAX_REPLY_CHARACTER_LENGTH) {
+    return content;
+  }
+
+  const flattened = content.replace(/\n+/g, ' ');
+  const sliced = flattened.slice(0, MAX_REPLY_CHARACTER_LENGTH + 1);
+  const lastSpace = sliced.lastIndexOf(' ');
+  const safeCut = lastSpace > MAX_REPLY_CHARACTER_LENGTH * 0.6 ? lastSpace : MAX_REPLY_CHARACTER_LENGTH;
+
+  return `${sliced.slice(0, safeCut).trim()}...`;
+}
+
 function ensurePreferredAddress(content: string): string {
   const trimmed = content.trim();
   if (!trimmed) {
@@ -1014,12 +1198,28 @@ function ensureEndsWithQuestion(content: string): string {
   return `${trimmed}?`;
 }
 
+function ensureSentenceEnding(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (/[.!?]$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  return `${trimmed}.`;
+}
+
 function enforceFranchiseeReplyStyle(
   content: string,
   options: {
     includeUrgency: boolean;
     includeMeetingOffer: boolean;
+    meetingInviteText?: string;
+    meetingTimeQuestionText?: string;
     empathyLine?: string;
+    requireQuestion: boolean;
   }
 ): string {
   let next = keepTwoShortSentences(stripRolePrefixes(content));
@@ -1038,15 +1238,30 @@ function enforceFranchiseeReplyStyle(
     next = `${next} ${DEFAULT_URGENCY_MESSAGE}`;
   }
 
+  const meetingInviteText = options.meetingInviteText || REQUIRED_MEETING_INVITE;
+  const meetingTimeQuestionText =
+    options.meetingTimeQuestionText || REQUIRED_TIME_SLOT_QUESTION;
+
   if (options.includeMeetingOffer && !hasMeetingInvite(next)) {
-    next = `${next} ${REQUIRED_MEETING_INVITE}`;
+    next = `${next} ${meetingInviteText}`;
   }
 
   if (options.includeMeetingOffer && !hasTimeSlotQuestion(next)) {
-    next = `${next} ${REQUIRED_TIME_SLOT_QUESTION}`;
+    next = `${next} ${meetingTimeQuestionText}`;
   }
 
-  return ensureEndsWithQuestion(normalizeWhitespace(next));
+  const normalized = normalizeMultilineWhitespace(
+    addLineBreaksForStructuredText(
+      formatPricingReplyAsList(normalizeNominalSpacing(next))
+    )
+  );
+  const compacted = shortenReply(normalized);
+
+  if (options.requireQuestion) {
+    return ensureEndsWithQuestion(compacted);
+  }
+
+  return ensureSentenceEnding(compacted);
 }
 
 function ensureTwoFieldFollowUp(content: string, missingFields: LeadField[]): string {
@@ -1094,12 +1309,34 @@ function buildProposalCaption(brandName: string, customCaption?: string): string
   const normalizedCustomCaption = customCaption?.trim();
 
   if (normalizedCustomCaption) {
-    return ensureEndsWithQuestion(
-      ensurePreferredAddress(keepTwoShortSentences(stripRolePrefixes(normalizedCustomCaption)))
+    const cleaned = ensurePreferredAddress(
+      keepTwoShortSentences(stripRolePrefixes(normalizedCustomCaption))
     );
+    return ensureSentenceEnding(cleaned);
   }
 
-  return `Kakak, berikut link proposal ${brandName}. Kakak mau lanjut bahas paket yang paling cocok?`;
+  return `Kakak, berikut link proposal ${brandName}. Kakak bisa cek dulu, nanti saya bantu pilih paket yang paling cocok.`;
+}
+
+function hasImplicitProposalCue(content: string): boolean {
+  return /(kirim|send|share|kasih|minta|mau|boleh|lihat|liat|detail|paket|link|dokumen|file|yang\s+tadi|yg\s+tadi|lanjutkan)/i.test(
+    content
+  );
+}
+
+function buildRecentUserContextForProposal(chatId: string): string {
+  const state = getConversationState(chatId);
+  if (!state || state.messages.length === 0) {
+    return '';
+  }
+
+  const recentUserMessages = state.messages
+    .filter((message) => message.role === 'user')
+    .slice(-4)
+    .map((message) => normalizeWhitespace(message.content))
+    .filter(Boolean);
+
+  return recentUserMessages.join(' ');
 }
 
 function buildProposalLinkMessage(
@@ -1115,7 +1352,28 @@ async function tryHandleProposalIntent(
   chatId: string,
   messageText: string
 ): Promise<boolean> {
-  const proposalLookup = await resolveBrandProposalRequest(messageText);
+  let proposalLookup = await resolveBrandProposalRequest(messageText);
+
+  const recentUserContext = buildRecentUserContextForProposal(chatId);
+  if (!proposalLookup.isProposalIntent && recentUserContext && hasImplicitProposalCue(messageText)) {
+    proposalLookup = await resolveBrandProposalRequest(
+      `proposal ${recentUserContext} ${messageText}`
+    );
+  }
+
+  if (proposalLookup.isProposalIntent && !proposalLookup.proposal && recentUserContext) {
+    const contextualLookup = await resolveBrandProposalRequest(
+      `${recentUserContext} ${messageText}`
+    );
+
+    if (contextualLookup.proposal) {
+      proposalLookup = {
+        isProposalIntent: true,
+        proposal: contextualLookup.proposal,
+      };
+    }
+  }
+
   if (!proposalLookup.isProposalIntent) {
     return false;
   }
@@ -1208,14 +1466,9 @@ async function handleConversation(
   }
 
   if (state.isComplete) {
-    const proposalHandled = await tryHandleProposalIntent(chatId, messageText);
     const removedFromProcessing = await removeProcessingLeadNumber(chatId);
     if (!removedFromProcessing) {
       console.warn(`[Redis] Failed to unmark processing for ${chatId} on complete state.`);
-    }
-
-    if (proposalHandled) {
-      return false;
     }
 
     console.log(`Conversation for ${chatId} is already complete, ignoring...`);
@@ -1400,13 +1653,15 @@ async function handleConversation(
   const collectedFieldCount = countCollectedLeadFields(
     stateWithUserMessage.collectedData
   );
+  const leadIsComplete = Boolean(finalLeadData);
   const completionReplyFallback =
     'Terima kasih, Kakak. Informasi Kakak sudah lengkap dan sudah kami catat. Kakak mau lihat proposal brand apa?';
-  const replySeed = completedFromStateFallback
+  const replySeed = leadIsComplete
+    ? completionReplyFallback
+    : completedFromStateFallback
     ? completionReplyFallback
     : cleanReply ||
       'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.';
-  const leadIsComplete = Boolean(finalLeadData);
   const shouldOfferMeeting =
     !leadIsComplete &&
     collectedFieldCount >= 3 &&
@@ -1416,14 +1671,32 @@ async function handleConversation(
     !leadIsComplete &&
     shouldOfferMeeting &&
     !hasAssistantMentionedUrgency(stateWithUserMessage.messages);
+  const missingFieldsCurrent = getMissingLeadFields(stateWithUserMessage.collectedData);
+  const mandatoryDataReminder = !leadIsComplete
+    ? buildMissingDataReminder(missingFieldsCurrent)
+    : '';
+  const meetingInviteText = buildMeetingInviteText(
+    stateWithUserMessage.collectedData,
+    messageText
+  );
+  const meetingTimeQuestionText = buildMeetingTimeQuestion(
+    stateWithUserMessage.collectedData,
+    messageText
+  );
   const empathyLine = buildEmpathyLine(messageText);
+  const replyWithReminder = mandatoryDataReminder
+    ? `${replySeed}\n\n${mandatoryDataReminder}`
+    : replySeed;
 
   const outgoingReply = enforceFranchiseeReplyStyle(
-    replySeed,
+    replyWithReminder,
     {
       includeUrgency: shouldIncludeUrgency,
       includeMeetingOffer: shouldOfferMeeting,
+      meetingInviteText,
+      meetingTimeQuestionText,
       empathyLine,
+      requireQuestion: missingFieldsCurrent.length > 0 || shouldOfferMeeting,
     }
   );
 

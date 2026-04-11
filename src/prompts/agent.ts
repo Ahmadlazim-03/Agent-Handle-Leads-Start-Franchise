@@ -238,6 +238,30 @@ function normalizeLeadPayload(payload: PartialLeadPayload): LeadData {
   };
 }
 
+function looksLikeLeadPayload(payload: PartialLeadPayload): boolean {
+  const keys = Object.keys(payload).map((key) => key.toLowerCase());
+  return keys.some((key) =>
+    [
+      'sumberinfo',
+      'sumber_info',
+      'sumber',
+      'biodata',
+      'bidangusaha',
+      'bidang_usaha',
+      'usaha',
+      'budget',
+      'anggaran',
+      'rencanamulai',
+      'rencana_mulai',
+      'timeline',
+      'nama',
+      'domisili',
+      'asal',
+      'kota',
+    ].includes(key)
+  );
+}
+
 function extractLabeledValue(content: string, labelPattern: string): string {
   const pattern = new RegExp(
     `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=\\b(?:sumber\\s*info|biodata|bidang\\s*usaha|budget|rencana\\s*mulai)\\b\\s*:|$)`,
@@ -280,7 +304,39 @@ function parseLeadFromLabeledText(content: string): LeadData | null {
 export function stripLeadPayload(content: string): string {
   const markerIndex = content.indexOf(LEAD_COMPLETE_TAG);
   if (markerIndex === -1) {
-    return content.trim();
+    const jsonPayload = extractFirstJsonObject(content);
+    if (!jsonPayload) {
+      return content.trim();
+    }
+
+    try {
+      const parsed = JSON.parse(jsonPayload) as PartialLeadPayload;
+      if (!looksLikeLeadPayload(parsed)) {
+        return content.trim();
+      }
+
+      const jsonStartIndex = content.indexOf(jsonPayload);
+      if (jsonStartIndex === -1) {
+        return content.trim();
+      }
+
+      const beforeJson = content
+        .slice(0, jsonStartIndex)
+        .replace(/\bjson\b\s*$/i, '')
+        .replace(/[\s:|;,-]+$/g, '')
+        .trim();
+
+      const afterJsonRaw = content.slice(jsonStartIndex + jsonPayload.length).trim();
+      const afterJson = /^\s*(tag|payload|lead_complete|\[\s*lead_complete\s*\])\s*[:\-]?\s*\??\s*$/i.test(
+        afterJsonRaw
+      )
+        ? ''
+        : afterJsonRaw;
+
+      return [beforeJson, afterJson].filter(Boolean).join(' ').trim();
+    } catch {
+      return content.trim();
+    }
   }
 
   return content.slice(0, markerIndex).trim();
@@ -288,26 +344,27 @@ export function stripLeadPayload(content: string): string {
 
 export function parseLeadFromMessage(content: string): LeadData | null {
   const markerIndex = content.indexOf(LEAD_COMPLETE_TAG);
-  if (markerIndex === -1) {
-    return parseLeadFromLabeledText(content);
-  }
-
-  const taggedPayload = content.slice(markerIndex + LEAD_COMPLETE_TAG.length).trim();
+  const taggedPayload =
+    markerIndex === -1
+      ? content.trim()
+      : content.slice(markerIndex + LEAD_COMPLETE_TAG.length).trim();
   const jsonPayload = extractFirstJsonObject(taggedPayload);
-  if (!jsonPayload) {
-    return null;
-  }
+  if (jsonPayload) {
+    try {
+      const rawPayload = JSON.parse(jsonPayload) as PartialLeadPayload;
+      if (looksLikeLeadPayload(rawPayload)) {
+        const normalizedPayload = normalizeLeadPayload(rawPayload);
 
-  try {
-    const rawPayload = JSON.parse(jsonPayload) as PartialLeadPayload;
-    const normalizedPayload = normalizeLeadPayload(rawPayload);
+        if (!isLeadComplete(normalizedPayload)) {
+          return null;
+        }
 
-    if (!isLeadComplete(normalizedPayload)) {
-      return null;
+        return normalizedPayload;
+      }
+    } catch {
+      // Ignore malformed JSON and continue to labeled fallback parser.
     }
-
-    return normalizedPayload;
-  } catch {
-    return null;
   }
+
+  return parseLeadFromLabeledText(content);
 }
