@@ -344,23 +344,6 @@ export async function POST(request: NextRequest) {
         console.error("Failed to download WAHA media", err);
         imageUrl = null;
       }
-    } else if (imageUrl && imageUrl.startsWith('waha-fetch:')) {
-      const fetchUrl = imageUrl.split('waha-fetch:')[1];
-      try {
-        const response = await fetch(fetchUrl);
-        if (response.ok) {
-          const arrayBuffer = await response.arrayBuffer();
-          const buffer = Buffer.from(arrayBuffer);
-          const mimeType = response.headers.get('content-type') || 'image/jpeg';
-          imageUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
-        } else {
-          console.error("Failed to fetch WAHA cached media: ", response.statusText);
-          imageUrl = null;
-        }
-      } catch (err) {
-        console.error("Error fetching WAHA cached media", err);
-        imageUrl = null;
-      }
     }
 
     if (chatId && isGroupOrBroadcastIdentifier(chatId)) {
@@ -417,7 +400,6 @@ export async function POST(request: NextRequest) {
         dedupeKey,
         messagePreview: normalizeWhitespace(effectiveMessageText).slice(0, 180),
         hasImage: Boolean(imageUrl),
-        rawPayload: payload,
       },
     });
 
@@ -532,14 +514,9 @@ function extractImageUrl(payload: JsonRecord): string | null {
   const type = extractTextValue(payload.type);
   const hasImageMessage = Boolean(nestedMessage?.imageMessage);
 
-  // Check if WAHA's local cache URL natively exists (often available for Product/Interactive media)
-  const mediaObj = asRecord(payload.media);
-  if (mediaObj && mediaObj.url) {
-    return `waha-fetch:${mediaObj.url}`;
-  }
-
+  // PRIORITY 1: Use WAHA download API (resolves via configured WAHA_URL, works on remote deployments)
+  // media.url from WAHA often uses localhost which fails on cloud deployments like Koyeb
   if (hasMedia || type === 'image' || type === 'video' || hasImageMessage) {
-    // Fallback: fetch the media binary directly using WAHA's /download API
     const messageId = extractMessageId(payload);
     if (messageId) {
       return `waha-download:${messageId}`;
@@ -1455,33 +1432,21 @@ async function tryHandleProposalIntent(
     return { handled: false };
   }
 
+  // Case: proposal intent detected but no specific brand matched — let AI ask naturally
   if (!proposalLookup.proposal) {
-    const clarificationMessage = await buildProposalClarificationMessage();
+    const availableBrands = await listAvailableProposalBrands();
+    const brandsList = availableBrands.length > 0
+      ? availableBrands.slice(0, 8).join(', ') + (availableBrands.length > 8 ? ', dan lainnya' : '')
+      : 'belum tersedia';
 
-    await delay(AI_RESPONSE_DELAY_MS);
+    const clarificationContext = `\n[PROPOSAL KLARIFIKASI] User meminta proposal tapi belum menyebutkan brand spesifik. Brand proposal yang tersedia saat ini: ${brandsList}. Tanyakan ke user brand mana yang dimaksud dengan gaya percakapan natural. JANGAN gunakan format markdown. JANGAN gunakan format list bernomor kaku. Tanyakan dengan santai dan profesional.`;
 
-    const clarificationSent = await sendWhatsAppMessage(chatId, clarificationMessage);
-    if (!clarificationSent) {
-      console.error(`Failed to send proposal clarification to ${chatId}`);
-    }
-
-    const assistantState = addMessageToState(
-      chatId,
-      'assistant',
-      clarificationMessage
-    );
-    if (!assistantState) {
-      console.warn(
-        `[Conversation] Missing state for ${chatId} when saving proposal clarification`
-      );
-    }
-
-    return { handled: true };
+    return { handled: false, proposalContext: clarificationContext };
   }
 
-  // Instead of sending a template, return proposal info for AI to handle naturally
+  // Case: specific brand proposal found — let AI deliver the link naturally
   const proposal = proposalLookup.proposal;
-  const proposalContext = `\n[PROPOSAL TERSEDIA] User meminta proposal. Brand: "${proposal.brandName}". Link proposal: ${proposal.fileUrl}. Berikan link ini ke user dengan kata-kata natural dan profesional. Jangan gunakan format template kaku. Setelah memberikan link, lanjutkan percakapan lead collection jika data belum lengkap.`;
+  const proposalContext = `\n[PROPOSAL TERSEDIA] User meminta proposal brand "${proposal.brandName}". Link download proposal: ${proposal.fileUrl}\n\nATURAN PENTING:\n- Berikan link ini ke user secara natural dan profesional.\n- JANGAN gunakan format markdown seperti [teks](url). WhatsApp TIDAK mendukung markdown link.\n- Cukup tulis URL langsung dalam pesan, contoh: "Berikut link proposal ${proposal.brandName}: ${proposal.fileUrl}"\n- Jangan gunakan format template kaku.\n- Setelah memberikan link, lanjutkan percakapan lead collection jika data belum lengkap.`;
 
   return { handled: false, proposalContext };
 }
