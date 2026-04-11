@@ -344,6 +344,23 @@ export async function POST(request: NextRequest) {
         console.error("Failed to download WAHA media", err);
         imageUrl = null;
       }
+    } else if (imageUrl && imageUrl.startsWith('waha-fetch:')) {
+      const fetchUrl = imageUrl.split('waha-fetch:')[1];
+      try {
+        const response = await fetch(fetchUrl);
+        if (response.ok) {
+          const arrayBuffer = await response.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          const mimeType = response.headers.get('content-type') || 'image/jpeg';
+          imageUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
+        } else {
+          console.error("Failed to fetch WAHA cached media: ", response.statusText);
+          imageUrl = null;
+        }
+      } catch (err) {
+        console.error("Error fetching WAHA cached media", err);
+        imageUrl = null;
+      }
     }
 
     if (chatId && isGroupOrBroadcastIdentifier(chatId)) {
@@ -515,8 +532,14 @@ function extractImageUrl(payload: JsonRecord): string | null {
   const type = extractTextValue(payload.type);
   const hasImageMessage = Boolean(nestedMessage?.imageMessage);
 
+  // Check if WAHA's local cache URL natively exists (often available for Product/Interactive media)
+  const mediaObj = asRecord(payload.media);
+  if (mediaObj && mediaObj.url) {
+    return `waha-fetch:${mediaObj.url}`;
+  }
+
   if (hasMedia || type === 'image' || type === 'video' || hasImageMessage) {
-    // We can fetch the media binary directly using WAHA's /download API
+    // Fallback: fetch the media binary directly using WAHA's /download API
     const messageId = extractMessageId(payload);
     if (messageId) {
       return `waha-download:${messageId}`;
