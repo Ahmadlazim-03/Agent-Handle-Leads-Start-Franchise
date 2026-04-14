@@ -5,14 +5,11 @@ import {
   isKnownLeadByAliases,
   isNewLead,
   applyLeadCompletionLabel,
-  downloadWahaMediaAsBase64,
-  fetchWahaMediaAsBase64FromUrl,
 } from '@/lib/waha';
 import { appendLeadToSheet } from '@/lib/sheets';
 import {
   sendTelegramNotification,
   sendTelegramDealMeetingNotification,
-  sendTelegramIntentNotification,
 } from '@/lib/telegram';
 import { appendDashboardLog } from '@/lib/dashboard-logs';
 import {
@@ -24,8 +21,6 @@ import {
 import {
   parseLeadFromMessage,
   stripLeadPayload,
-  INTENT_FRANCHISOR_TAG,
-  INTENT_OTHER_TAG,
 } from '@/prompts/agent';
 import { DEFAULT_RUNTIME_SYSTEM_PROMPT } from '@/prompts/runtime-system';
 import {
@@ -47,9 +42,9 @@ export const runtime = 'nodejs';
 
 const AI_RESPONSE_DELAY_MS = 2000;
 const DUPLICATE_MESSAGE_TTL_MS = 10 * 60 * 1000;
-const MAX_MODEL_CONTEXT_MESSAGES = 20;
-const MAX_PRIMARY_RESPONSE_SENTENCES = 5;
-const MAX_REPLY_CHARACTER_LENGTH = 800;
+const MAX_MODEL_CONTEXT_MESSAGES = 8;
+const MAX_PRIMARY_RESPONSE_SENTENCES = 2;
+const MAX_REPLY_CHARACTER_LENGTH = 320;
 const processedMessageIds = new Map<string, number>();
 const activeChatRequests = new Set<string>();
 
@@ -104,6 +99,8 @@ const PRIORITY_DATA_GUIDANCE_OPENING =
   'Untuk melanjutkan, saya perlu data lengkap Kakak:';
 const PRIORITY_DATA_GUIDANCE_CLOSING =
   'Setelah data tersebut lengkap, kami bisa bantu tindak lanjut lebih lanjut.';
+const FIRST_PROPOSAL_NEED_QUESTION =
+  'Sekalian, boleh saya tahu keperluan Kakak saat ini: menjadi Franchisee, Franchisor, atau kebutuhan lainnya?';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -306,16 +303,24 @@ export async function POST(request: NextRequest) {
     if (isFromMe(payload)) {
       if (chatId && !isGroupOrBroadcastIdentifier(chatId)) {
         const incomingSeeded = await saveIncomingLeadNumber(chatId);
-        const knownSeeded = await saveKnownLeadNumber(chatId);
+        const existingState = getConversationState(chatId);
+        const shouldSeedKnown = !existingState || existingState.isComplete;
+        const knownSeeded = shouldSeedKnown
+          ? await saveKnownLeadNumber(chatId)
+          : true;
         const processingCleared = await removeProcessingLeadNumber(chatId);
 
         if (!incomingSeeded || !knownSeeded) {
           console.warn(
-            `[Gatekeeper] Outbound seed failed for ${chatId}: incomingSeeded=${incomingSeeded}, knownSeeded=${knownSeeded}`
+            `[Gatekeeper] Outbound seed failed for ${chatId}: incomingSeeded=${incomingSeeded}, knownSeeded=${knownSeeded}, shouldSeedKnown=${shouldSeedKnown}`
+          );
+        } else if (shouldSeedKnown) {
+          console.log(
+            `[Gatekeeper] Outbound message detected for ${chatId}, Redis seed completed (known + incoming).`
           );
         } else {
           console.log(
-            `[Gatekeeper] Outbound message detected for ${chatId}, Redis seed completed (known + incoming).`
+            `[Gatekeeper] Outbound message for ${chatId} belongs to active conversation, skipping known-lead seed.`
           );
         }
 
@@ -330,57 +335,13 @@ export async function POST(request: NextRequest) {
     }
 
     const messageText = extractMessageText(payload);
-    let imageUrl = extractImageUrl(payload);
-
-    if (imageUrl && imageUrl.startsWith('waha-download:')) {
-      const wahaMediaId = imageUrl.split('waha-download:')[1];
-      try {
-        const base64Data = await downloadWahaMediaAsBase64(wahaMediaId);
-        if (base64Data) {
-          imageUrl = base64Data;
-        } else {
-          imageUrl = null;
-        }
-      } catch (err: any) {
-        console.error("Failed to download WAHA media", err);
-        void appendDashboardLog({
-          level: 'error',
-          source: 'webhook',
-          message: 'Gagal download media via WAHA API',
-          details: { error: err?.message || String(err), wahaMediaId }
-        });
-        imageUrl = null;
-      }
-    } else if (imageUrl && imageUrl.startsWith('waha-file-url:')) {
-      const fetchUrl = imageUrl.split('waha-file-url:')[1];
-      try {
-        const base64Data = await fetchWahaMediaAsBase64FromUrl(fetchUrl);
-        if (base64Data) {
-          imageUrl = base64Data;
-        } else {
-          imageUrl = null;
-        }
-      } catch (err: any) {
-        console.error("Failed to fetch WAHA cached media url", err);
-        void appendDashboardLog({
-          level: 'error',
-          source: 'webhook',
-          message: 'Gagal fetch media dari WAHA URL',
-          details: { error: err?.message || String(err), fetchUrl }
-        });
-        imageUrl = null;
-      }
-    }
 
     if (chatId && isGroupOrBroadcastIdentifier(chatId)) {
       console.log(`Ignoring group/broadcast chatId=${chatId}`);
       return NextResponse.json({ status: 'ignored_group_or_broadcast' });
     }
 
-    // Allow image-only messages (no text) to pass through with placeholder
-    const effectiveMessageText = messageText || (imageUrl ? '[User mengirim gambar]' : null);
-
-    if (!chatId || !effectiveMessageText) {
+    if (!chatId || !messageText) {
       console.log(
         `Ignoring non-text webhook event source=${chatIdentifier || 'unknown'}`
       );
@@ -405,7 +366,7 @@ export async function POST(request: NextRequest) {
     }
 
     messageId = extractMessageId(payload);
-    dedupeKey = messageId ?? buildSyntheticMessageId(payload, chatId, effectiveMessageText);
+    dedupeKey = messageId ?? buildSyntheticMessageId(payload, chatId, messageText);
 
     if (!shouldProcessMessage(dedupeKey)) {
       console.log(
@@ -419,24 +380,22 @@ export async function POST(request: NextRequest) {
     void appendDashboardLog({
       level: 'info',
       source: 'webhook',
-      message: imageUrl ? 'Webhook image message diproses.' : 'Webhook text message diproses.',
+      message: 'Webhook text message diproses.',
       details: {
         chatId,
         leadIdentifier,
         dedupeKey,
-        messagePreview: normalizeWhitespace(effectiveMessageText).slice(0, 180),
-        hasImage: Boolean(imageUrl),
+        messagePreview: normalizeWhitespace(messageText).slice(0, 180),
       },
     });
 
     const runtimeSystemPrompt = await getRuntimeSystemPrompt();
     const isComplete = await handleConversation(
       chatId,
-      effectiveMessageText,
+      messageText,
       leadIdentifier,
       identifierCandidates,
-      runtimeSystemPrompt,
-      imageUrl
+      runtimeSystemPrompt
     );
 
     return NextResponse.json({ status: isComplete ? 'complete' : 'processed' });
@@ -530,51 +489,6 @@ function extractMessageText(payload: JsonRecord): string | null {
   }
 
   return null;
-}
-
-function extractImageUrl(payload: JsonRecord): string | null {
-  const nestedMessage = asRecord(payload.message);
-
-  // Check if WAHA explicitly indicates there is media, or if the type is image/video
-  const hasMedia = extractBoolean(payload.hasMedia);
-  const type = extractTextValue(payload.type);
-  const hasImageMessage = Boolean(nestedMessage?.imageMessage);
-
-  // PRIORITY 1: Check if WAHA's local cache URL natively exists (often available for Product/Interactive media)
-  const mediaObj = asRecord(payload.media);
-  if (mediaObj && mediaObj.url) {
-    return `waha-file-url:${mediaObj.url}`;
-  }
-
-  // PRIORITY 2: Use WAHA download API if id exists but no direct url
-  if (hasMedia || type === 'image' || type === 'video' || hasImageMessage) {
-    const messageId = extractMessageId(payload);
-    if (messageId) {
-      return `waha-download:${messageId}`;
-    }
-  }
-
-  if (!nestedMessage) {
-    // Check top-level for WAHA-style media
-    const directMedia = extractTextValue(payload.mediaUrl as string) ?? extractTextValue(payload.media_url as string);
-    if (directMedia) {
-      return directMedia;
-    }
-    return null;
-  }
-
-  const imageMessage = asRecord(nestedMessage.imageMessage);
-  if (!imageMessage) {
-    return null;
-  }
-
-  // WAHA Plus provides mediaUrl directly; standard WAHA provides url
-  return (
-    extractTextValue(imageMessage.mediaUrl as string) ??
-    extractTextValue(imageMessage.url as string) ??
-    extractTextValue(imageMessage.directPath as string) ??
-    null
-  );
 }
 
 function extractBoolean(value: unknown): boolean {
@@ -842,7 +756,7 @@ function extractBudget(text: string): string {
   const numericBudgetMatch = text.match(
     /(?:rp\.?\s*)?\d{1,3}(?:[.,]\d{3})*(?:\s*(?:juta|jt|miliar|m|ribu|rb))?(?:\s*(?:-|sampai|hingga|sd)\s*(?:rp\.?\s*)?\d{1,3}(?:[.,]\d{3})*(?:\s*(?:juta|jt|miliar|m|ribu|rb))?)?/i
   );
-  if (numericBudgetMatch && numericBudgetMatch[0].match(/\d/)) {
+  if (numericBudgetMatch) {
     return normalizeBudgetText(numericBudgetMatch[0]);
   }
 
@@ -857,7 +771,7 @@ function extractBudget(text: string): string {
 function extractStartPlan(text: string): string {
   const lower = text.toLowerCase();
   const directPlanMatch = lower.match(
-    /(secepatnya|segera|nanti|belum|nnti|kapan-kapan|bulan depan|minggu depan|tahun depan|tahun ini|bulan ini|akhir bulan ini|awal bulan depan|q[1-4]|kuartal\s*[1-4]|\d+\s*(?:hari|minggu|bulan|tahun)\s*(?:lagi|dari sekarang))/i
+    /(bulan depan|minggu depan|tahun depan|tahun ini|bulan ini|akhir bulan ini|awal bulan depan|secepatnya|segera|q[1-4]|kuartal\s*[1-4])/i
   );
   if (directPlanMatch) {
     return normalizeWhitespace(directPlanMatch[0]);
@@ -1331,20 +1245,58 @@ function ensureSentenceEnding(content: string): string {
   return `${trimmed}.`;
 }
 
-function formatAIReply(content: string): string {
+function enforceFranchiseeReplyStyle(
+  content: string,
+  options: {
+    includeUrgency: boolean;
+    includeMeetingOffer: boolean;
+    meetingInviteText?: string;
+    meetingTimeQuestionText?: string;
+    empathyLine?: string;
+    requireQuestion: boolean;
+  }
+): string {
   let next = stripRolePrefixes(content);
+  if (!hasStructuredContent(next)) {
+    next = keepTwoShortSentences(next);
+  }
 
   if (!next) {
     next = 'Terima kasih sudah menghubungi StartFranchise.id.';
   }
 
-  // Keep formatting normalizations but don't truncate or inject content
+  next = ensurePreferredAddress(next);
+
+  if (options.empathyLine && !hasEmpathyMessage(next)) {
+    next = `${options.empathyLine} ${next}`;
+  }
+
+  if (options.includeUrgency && !hasUrgencyMessage(next)) {
+    next = `${next} ${DEFAULT_URGENCY_MESSAGE}`;
+  }
+
+  const meetingInviteText = options.meetingInviteText || REQUIRED_MEETING_INVITE;
+  const meetingTimeQuestionText =
+    options.meetingTimeQuestionText || REQUIRED_TIME_SLOT_QUESTION;
+
+  if (options.includeMeetingOffer && !hasMeetingInvite(next)) {
+    next = `${next} ${meetingInviteText}`;
+  }
+
+  if (options.includeMeetingOffer && !hasTimeSlotQuestion(next)) {
+    next = `${next} ${meetingTimeQuestionText}`;
+  }
+
   const normalized = normalizeMultilineWhitespace(
     addLineBreaksForStructuredText(
       formatPricingReplyAsList(normalizeNominalSpacing(next))
     )
   );
   const compacted = shortenReply(normalized);
+
+  if (options.requireQuestion && /\?|\b(kapan|berapa|apakah|boleh|prefer|lebih\s+nyaman)\b/i.test(compacted)) {
+    return ensureEndsWithQuestion(compacted);
+  }
 
   return ensureSentenceEnding(compacted);
 }
@@ -1433,10 +1385,22 @@ function buildProposalLinkMessage(
   return `${caption}\n\nLink proposal ${brandName}: ${fileUrl}`;
 }
 
+function appendNeedQuestionForFirstProposal(
+  message: string,
+  includeNeedQuestion: boolean
+): string {
+  if (!includeNeedQuestion) {
+    return message;
+  }
+
+  return `${message}\n\n${FIRST_PROPOSAL_NEED_QUESTION}`;
+}
+
 async function tryHandleProposalIntent(
   chatId: string,
-  messageText: string
-): Promise<{ handled: boolean; proposalContext?: string }> {
+  messageText: string,
+  includeNeedQuestionForFirstTurn = false
+): Promise<boolean> {
   let proposalLookup = await resolveBrandProposalRequest(messageText);
 
   const recentUserContext = buildRecentUserContextForProposal(chatId);
@@ -1460,26 +1424,61 @@ async function tryHandleProposalIntent(
   }
 
   if (!proposalLookup.isProposalIntent) {
-    return { handled: false };
+    return false;
   }
 
-  // Case: proposal intent detected but no specific brand matched — let AI ask naturally
   if (!proposalLookup.proposal) {
-    const availableBrands = await listAvailableProposalBrands();
-    const brandsList = availableBrands.length > 0
-      ? availableBrands.slice(0, 8).join(', ') + (availableBrands.length > 8 ? ', dan lainnya' : '')
-      : 'belum tersedia';
+    const clarificationMessage = appendNeedQuestionForFirstProposal(
+      await buildProposalClarificationMessage(),
+      includeNeedQuestionForFirstTurn
+    );
 
-    const clarificationContext = `\n[PROPOSAL KLARIFIKASI] User meminta proposal tapi belum menyebutkan brand spesifik. Brand proposal yang tersedia saat ini: ${brandsList}. Tanyakan ke user brand mana yang dimaksud dengan gaya percakapan natural. JANGAN gunakan format markdown. JANGAN gunakan format list bernomor kaku. Tanyakan dengan santai dan profesional.`;
+    await delay(AI_RESPONSE_DELAY_MS);
 
-    return { handled: false, proposalContext: clarificationContext };
+    const clarificationSent = await sendWhatsAppMessage(chatId, clarificationMessage);
+    if (!clarificationSent) {
+      console.error(`Failed to send proposal clarification to ${chatId}`);
+    }
+
+    const assistantState = addMessageToState(
+      chatId,
+      'assistant',
+      clarificationMessage
+    );
+    if (!assistantState) {
+      console.warn(
+        `[Conversation] Missing state for ${chatId} when saving proposal clarification`
+      );
+    }
+
+    return true;
   }
 
-  // Case: specific brand proposal found — let AI deliver the link naturally
   const proposal = proposalLookup.proposal;
-  const proposalContext = `\n[PROPOSAL TERSEDIA] User meminta proposal brand "${proposal.brandName}". Link download proposal: ${proposal.fileUrl}\n\nATURAN PENTING:\n- Berikan link ini ke user secara natural dan profesional.\n- JANGAN gunakan format markdown seperti [teks](url). WhatsApp TIDAK mendukung markdown link.\n- Cukup tulis URL langsung dalam pesan, contoh: "Berikut link proposal ${proposal.brandName}: ${proposal.fileUrl}"\n- Jangan gunakan format template kaku.\n- Setelah memberikan link, lanjutkan percakapan lead collection jika data belum lengkap.`;
+  const proposalMessage = appendNeedQuestionForFirstProposal(
+    buildProposalLinkMessage(
+      proposal.brandName,
+      proposal.fileUrl,
+      proposal.caption
+    ),
+    includeNeedQuestionForFirstTurn
+  );
 
-  return { handled: false, proposalContext };
+  await delay(AI_RESPONSE_DELAY_MS);
+
+  const linkSent = await sendWhatsAppMessage(chatId, proposalMessage);
+  if (!linkSent) {
+    console.error(
+      `Failed to send proposal link message for ${chatId} brand=${proposal.brandName}`
+    );
+  }
+
+  const assistantState = addMessageToState(chatId, 'assistant', proposalMessage);
+  if (!assistantState) {
+    console.warn(`[Conversation] Missing state for ${chatId} when saving proposal reply`);
+  }
+
+  return true;
 }
 
 async function handleConversation(
@@ -1487,19 +1486,20 @@ async function handleConversation(
   messageText: string,
   leadIdentifier: string,
   identifierCandidates: string[],
-  runtimeSystemPrompt: string,
-  imageUrl?: string | null
+  runtimeSystemPrompt: string
 ): Promise<boolean> {
   if (isGroupOrBroadcastIdentifier(chatId)) {
     console.log(`Conversation ignored for non-personal chatId=${chatId}`);
     return false;
   }
 
+  let state = getConversationState(chatId);
+
   const matchedKnownAlias = await isKnownLeadByAliases(
     chatId,
     identifierCandidates
   );
-  if (matchedKnownAlias) {
+  if (matchedKnownAlias && (!state || state.isComplete)) {
     resetConversationByPhoneNumber(chatId);
     const removedFromProcessing = await removeProcessingLeadNumber(chatId);
     if (!removedFromProcessing) {
@@ -1510,7 +1510,11 @@ async function handleConversation(
     return false;
   }
 
-  let state = getConversationState(chatId);
+  if (matchedKnownAlias && state && !state.isComplete) {
+    console.log(
+      `[Gatekeeper] ${chatId} is in known set but active conversation exists, continuing flow.`
+    );
+  }
 
   if (!state) {
     const isLeadNew = await isNewLead(chatId, identifierCandidates);
@@ -1553,12 +1557,73 @@ async function handleConversation(
   const userMessageCount = stateWithUserMessage.messages.filter(
     (message) => message.role === 'user'
   ).length;
+  const isFirstUserTurn = userMessageCount === 1;
   const missingFieldsAfterUserMessage = getMissingLeadFields(
     stateWithUserMessage.collectedData
   );
 
-  // All messages (including first contact) are now handled by AI dynamically
-  // The system prompt instructs Melisa to introduce herself on first message
+  const proposalHandled = await tryHandleProposalIntent(
+    chatId,
+    messageText,
+    isFirstUserTurn
+  );
+  if (proposalHandled) {
+    return false;
+  }
+
+  if (userMessageCount === 1) {
+    const introReply = enforceFranchiseeReplyStyle(
+      FIRST_CONTACT_INTRO_MESSAGE,
+      {
+        includeUrgency: false,
+        includeMeetingOffer: false,
+        requireQuestion: false,
+      }
+    );
+
+    await delay(AI_RESPONSE_DELAY_MS);
+
+    const introSent = await sendWhatsAppMessage(chatId, introReply);
+    if (!introSent) {
+      console.error(`Failed to send first-contact introduction to ${chatId}`);
+    }
+
+    const assistantState = addMessageToState(chatId, 'assistant', introReply);
+    if (!assistantState) {
+      console.error(
+        `Missing conversation state for ${chatId} when adding first-contact introduction`
+      );
+    }
+
+    return false;
+  }
+
+  if (userMessageCount === 2 && missingFieldsAfterUserMessage.length > 0) {
+    const guidanceReply = enforceFranchiseeReplyStyle(
+      buildPriorityLeadDataGuidance(missingFieldsAfterUserMessage),
+      {
+        includeUrgency: false,
+        includeMeetingOffer: false,
+        requireQuestion: false,
+      }
+    );
+
+    await delay(AI_RESPONSE_DELAY_MS);
+
+    const guidanceSent = await sendWhatsAppMessage(chatId, guidanceReply);
+    if (!guidanceSent) {
+      console.error(`Failed to send priority data guidance to ${chatId}`);
+    }
+
+    const assistantState = addMessageToState(chatId, 'assistant', guidanceReply);
+    if (!assistantState) {
+      console.error(
+        `Missing conversation state for ${chatId} when adding priority data guidance`
+      );
+    }
+
+    return false;
+  }
 
   const meetingSchedule = extractMeetingSchedule(messageText);
   const isDealAndMeetingFinalized =
@@ -1644,25 +1709,14 @@ async function handleConversation(
     return true;
   }
 
-  const proposalResult = await tryHandleProposalIntent(chatId, messageText);
-  if (proposalResult.handled) {
-    return false;
-  }
-
   const missingFieldsBeforeReply = getMissingLeadFields(
     stateWithUserMessage.collectedData
   );
 
-  let runtimeSystemMessage = await buildRuntimeSystemMessage(
+  const runtimeSystemMessage = await buildRuntimeSystemMessage(
     runtimeSystemPrompt,
     stateWithUserMessage.collectedData
   );
-
-  // Inject proposal context into AI system message if a proposal link was found
-  if (proposalResult.proposalContext) {
-    runtimeSystemMessage += proposalResult.proposalContext;
-  }
-
   const recentConversationMessages = stateWithUserMessage.messages.slice(
     -MAX_MODEL_CONTEXT_MESSAGES
   );
@@ -1675,53 +1729,17 @@ async function handleConversation(
 
   const openaiModel = await getOpenAIModel();
 
-  // Build messages with vision support if image is present
-  type ChatMessage = {
-    role: 'system' | 'user' | 'assistant';
-    content: string | Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }>;
-  };
-
-  const systemMsg: ChatMessage = {
-    role: 'system',
-    content: runtimeSystemMessage,
-  };
-
-  const contextMessages: ChatMessage[] = recentConversationMessages.slice(0, -1).map((msg) => ({
-    role: msg.role as 'user' | 'assistant',
-    content: msg.content,
-  }));
-
-  // Build the latest user message (potentially with image)
-  const lastUserMsg = recentConversationMessages[recentConversationMessages.length - 1];
-  let latestUserMessage: ChatMessage;
-
-  if (imageUrl && lastUserMsg?.role === 'user') {
-    latestUserMessage = {
-      role: 'user',
-      content: [
-        { type: 'text', text: lastUserMsg.content },
-        { type: 'image_url', image_url: { url: imageUrl, detail: 'low' } },
-      ],
-    };
-  } else if (lastUserMsg) {
-    latestUserMessage = {
-      role: lastUserMsg.role as 'user' | 'assistant',
-      content: lastUserMsg.content,
-    };
-  } else {
-    latestUserMessage = {
-      role: 'user',
-      content: messageText,
-    };
-  }
-
-  const openaiMessages = [systemMsg, ...contextMessages, latestUserMessage];
-
   const response = await openaiClient.chat.completions.create({
     model: openaiModel,
-    messages: openaiMessages as Parameters<typeof openaiClient.chat.completions.create>[0]['messages'],
-    temperature: 0.45,
-    max_tokens: 700,
+    messages: [
+      {
+        role: 'system',
+        content: runtimeSystemMessage,
+      },
+      ...recentConversationMessages,
+    ],
+    temperature: 0.7,
+    max_tokens: 500,
   });
 
   const aiReply = response.choices[0]?.message?.content?.trim() || '';
@@ -1729,60 +1747,6 @@ async function handleConversation(
   if (!aiReply) {
     console.error('Empty AI response');
     return false;
-  }
-
-  // --- Intent Detection: Franchisor or Other ---
-  const hasFranchisorIntent = aiReply.includes(INTENT_FRANCHISOR_TAG);
-  const hasOtherIntent = aiReply.includes(INTENT_OTHER_TAG);
-
-  if (hasFranchisorIntent || hasOtherIntent) {
-    const intentType = hasFranchisorIntent ? 'franchisor' : 'other';
-    const intentTag = hasFranchisorIntent ? INTENT_FRANCHISOR_TAG : INTENT_OTHER_TAG;
-
-    // Strip the intent tag from the message sent to user
-    const cleanIntentReply = formatAIReply(
-      aiReply.replace(intentTag, '').trim()
-    );
-
-    await delay(AI_RESPONSE_DELAY_MS);
-
-    const sendResult = await sendWhatsAppMessage(chatId, cleanIntentReply);
-    if (!sendResult) {
-      console.error(`Failed to deliver intent reply to ${chatId}`);
-    }
-
-    const assistantState = addMessageToState(chatId, 'assistant', cleanIntentReply);
-    if (!assistantState) {
-      console.error(`Missing conversation state for ${chatId} when saving intent reply`);
-    }
-
-    // Send Telegram notification
-    const telegramSent = await sendTelegramIntentNotification({
-      phoneNumber: leadIdentifier,
-      intentType,
-      userMessage: messageText,
-    });
-
-    if (!telegramSent) {
-      console.error(`Failed to send Telegram intent notification for ${chatId}`);
-    }
-
-    void appendDashboardLog({
-      level: 'info',
-      source: 'webhook',
-      message: `Lead intent terdeteksi: ${intentType}. Bot berhenti merespons.`,
-      details: {
-        chatId,
-        leadIdentifier,
-        intentType,
-        telegramSent,
-      },
-    });
-
-    // Stop the bot for this conversation
-    markConversationComplete(chatId);
-    await removeProcessingLeadNumber(chatId);
-    return true;
   }
 
   const parsedLeadData = parseLeadFromMessage(aiReply);
@@ -1813,17 +1777,55 @@ async function handleConversation(
       : ensureTwoFieldFollowUp(aiReply, missingFieldsBeforeReply);
 
   const cleanReply = stripLeadPayload(aiReplyForDelivery);
+  const collectedFieldCount = countCollectedLeadFields(
+    stateWithUserMessage.collectedData
+  );
   const leadIsComplete = Boolean(finalLeadData);
   const completionReplyFallback =
-    'Terima kasih, Kakak. Semua informasi sudah lengkap dan kami catat. Tim Business Manager kami akan segera memproses data Kakak dan menghubungi kembali secepatnya.';
-  const replySeed = leadIsComplete || completedFromStateFallback
+    'Terima kasih, Kakak. Informasi Kakak sudah lengkap dan sudah kami catat. Kakak mau lihat proposal brand apa?';
+  const replySeed = leadIsComplete
+    ? completionReplyFallback
+    : completedFromStateFallback
     ? completionReplyFallback
     : cleanReply ||
       'Terima kasih, datanya sudah kami catat. Tim kami akan segera menghubungi Anda.';
+  const shouldOfferMeeting =
+    !leadIsComplete &&
+    collectedFieldCount >= 3 &&
+    hasHighIntentSignal(messageText) &&
+    !hasAssistantMentionedMeeting(stateWithUserMessage.messages);
+  const shouldIncludeUrgency =
+    !leadIsComplete &&
+    shouldOfferMeeting &&
+    !hasAssistantMentionedUrgency(stateWithUserMessage.messages);
+  const missingFieldsCurrent = getMissingLeadFields(stateWithUserMessage.collectedData);
+  const mandatoryDataReminder = !leadIsComplete
+    ? buildMissingDataReminder(missingFieldsCurrent)
+    : '';
+  const meetingInviteText = buildMeetingInviteText(
+    stateWithUserMessage.collectedData,
+    messageText
+  );
+  const meetingTimeQuestionText = buildMeetingTimeQuestion(
+    stateWithUserMessage.collectedData,
+    messageText
+  );
+  const empathyLine = buildEmpathyLine(messageText);
+  const replyWithReminder = mandatoryDataReminder
+    ? `${replySeed}\n\n${mandatoryDataReminder}`
+    : replySeed;
 
-  // AI now handles empathy, urgency, meeting offers via the improved system prompt
-  // We only do formatting cleanup (role prefix stripping, nominal spacing, structured text)
-  const outgoingReply = formatAIReply(replySeed);
+  const outgoingReply = enforceFranchiseeReplyStyle(
+    replyWithReminder,
+    {
+      includeUrgency: shouldIncludeUrgency,
+      includeMeetingOffer: shouldOfferMeeting,
+      meetingInviteText,
+      meetingTimeQuestionText,
+      empathyLine,
+      requireQuestion: shouldOfferMeeting,
+    }
+  );
 
   await delay(AI_RESPONSE_DELAY_MS);
 
